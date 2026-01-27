@@ -11,12 +11,12 @@ spec:
   chart:
     spec:
       chart: pdvd
-      version: "12.0.113"
+      version: ">=12.0.0"
       sourceRef:
         kind: HelmRepository
         name: pdvd-charts
         namespace: flux-system
-      interval: 1h
+      interval: 5m
   valuesFrom:
     - kind: ConfigMap
       name: pdvd-values
