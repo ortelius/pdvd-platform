@@ -22,3 +22,4 @@ spec:
       name: pdvd-values
     - kind: Secret
       name: pdvd-secrets
+      valuesKey: secrets.enc.yaml
