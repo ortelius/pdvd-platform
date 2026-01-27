@@ -1,0 +1,23 @@
+pdvd-frontend:
+  graphqlEndpoint: "https://app.deployhub.com/api/v1/graphql"
+  restapiEndpoint: "https://app.deployhub.com/api/v1"
+  ingress:
+    type: glb
+
+pdvd-backend:
+  ingress:
+    type: glb
+  rbac_repo: "https://github.com/ortelius/pdvd-rbac.git"
+  apiBaseUrl: "https://app.deployhub.com"
+  baseUrl: "https://app.deployhub.com"
+  github:
+    appName: "deployhub"
+    appId: "2727141"
+    clientId: "Iv23liKdUQ34YPWnFfvu"
+
+smtp:
+  enabled: true
+  host: "smtp.gmail.com"
+  port: "587"
+  fromEmail: "steve@deployhub.com"
+  fromName: "Steve Taylor"
