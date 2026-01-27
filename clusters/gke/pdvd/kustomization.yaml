@@ -2,24 +2,23 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 metadata:
   name: pdvd
-  namespace: flux-system   # <- this tells Flux where to create generated resources
+  namespace: flux-system
 
 resources:
   - pdvd-helmrepository.yaml
   - pdvd-helmrelease.yaml
 
-
 configMapGenerator:
   - name: pdvd-values
-    namespace: flux-system   # <- add this
+    namespace: flux-system
     files:
       - values.yaml
 
 secretGenerator:
   - name: pdvd-secrets
-    namespace: flux-system   # <- add this
+    namespace: flux-system
     files:
-      - secrets.enc.yaml
+      - values.yaml=secrets.enc.yaml  
 
 generatorOptions:
   disableNameSuffixHash: true
