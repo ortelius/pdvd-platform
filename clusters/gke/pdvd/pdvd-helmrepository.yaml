@@ -4,5 +4,5 @@ metadata:
   name: pdvd-charts
   namespace: flux-system
 spec:
-  interval: 1h
+  interval: 5m
   url: https://ortelius.github.io/pdvd-charts
