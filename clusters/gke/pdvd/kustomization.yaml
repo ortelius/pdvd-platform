@@ -5,7 +5,9 @@ metadata:
   namespace: flux-system   # <- this tells Flux where to create generated resources
 
 resources:
-  - pdvd-helmrelease.yaml  # Only real K8s resource
+  - pdvd-helmrepository.yaml
+  - pdvd-helmrelease.yaml
+
 
 configMapGenerator:
   - name: pdvd-values
