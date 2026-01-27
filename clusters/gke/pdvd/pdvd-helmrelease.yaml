@@ -4,7 +4,7 @@ metadata:
   name: pdvd
   namespace: flux-system   
 spec:
-  interval: 10m
+  interval: 5m
   targetNamespace: pdvd     
   install:
     createNamespace: true
