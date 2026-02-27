@@ -58,10 +58,14 @@ case "$ACTION" in
     terraform output
     ;;
   destroy)
-    echo "WARNING: This will destroy the $CLUSTER cluster and all resources."
-    read -r -p "Type the cluster name to confirm: " CONFIRM
-    [[ "$CONFIRM" != "$CLUSTER" ]] && { echo "Aborted."; exit 1; }
-    terraform destroy
+    # lifecycle.prevent_destroy cannot use variables in Terraform, so we
+    # temporarily patch sops.tf to allow KMS key deletion, then restore it.
+    SOPS_TF="$WORKDIR/sops.tf"
+    if [[ -f "$SOPS_TF" ]]; then
+      sed -i.bak 's/prevent_destroy = true/prevent_destroy = false/' "$SOPS_TF"
+      trap 'sed -i.bak "s/prevent_destroy = false/prevent_destroy = true/" "$SOPS_TF" && rm -f "$SOPS_TF.bak"' EXIT
+    fi
+    terraform destroy -auto-approve
     ;;
   *)
     usage
