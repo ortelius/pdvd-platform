@@ -56,6 +56,60 @@ case "$ACTION" in
     echo ""
     echo "── Outputs ──────────────────────────────"
     terraform output
+
+    if [[ "$CLUSTER" == "eks" ]]; then
+      DOMAIN=$(grep 'domain' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
+      CLUSTER_NAME=$(grep 'cluster_name' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
+      REGION=$(grep 'aws_region' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
+
+      echo ""
+      echo "══════════════════════════════════════════════════════════════"
+      echo "  Waiting for ALB hostname (Flux may still be reconciling)..."
+      echo "══════════════════════════════════════════════════════════════"
+
+      aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION"
+
+      ALB_HOST=""
+      for i in $(seq 1 30); do
+        ALB_HOST=$(kubectl get ingress -n pdvd pdvd-frontend-ingress           -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+        if [[ -n "$ALB_HOST" ]]; then
+          break
+        fi
+        echo "  Attempt $i/30 — ALB not ready yet, retrying in 10s..."
+        sleep 10
+      done
+
+      echo ""
+      if [[ -n "$ALB_HOST" ]]; then
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        echo "║  DNS Setup                                                   ║"
+        echo "╠══════════════════════════════════════════════════════════════╣"
+        echo "║  Create a CNAME record in your DNS provider:                 ║"
+        echo "║                                                              ║"
+        printf "║  Name : %-53s║
+" "$DOMAIN"
+        printf "║  Type : %-53s║
+" "CNAME"
+        printf "║  Value: %-53s║
+" "$ALB_HOST"
+        echo "╠══════════════════════════════════════════════════════════════╣"
+        echo "║  Once DNS propagates, open:                                  ║"
+        printf "║    https://%-50s║
+" "$DOMAIN"
+        echo "║                                                              ║"
+        echo "║  To test before DNS propagates:                              ║"
+        printf "║    curl -sk -H 'Host: %s'\n" "$DOMAIN"
+        printf "║         https://%-45s║
+" "$ALB_HOST"
+        echo "╚══════════════════════════════════════════════════════════════╝"
+      else
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        echo "║  ALB hostname not yet assigned — Flux may still be syncing. ║"
+        echo "║  Check ingress status with:                                  ║"
+        echo "║    kubectl get ingress -n pdvd pdvd-frontend-ingress         ║"
+        echo "╚══════════════════════════════════════════════════════════════╝"
+      fi
+    fi
     ;;
   destroy)
     # lifecycle.prevent_destroy cannot use variables in Terraform, so we

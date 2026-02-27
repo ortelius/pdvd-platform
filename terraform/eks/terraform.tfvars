@@ -8,3 +8,4 @@ vpc_cidr     = "10.0.0.0/16"
 
 github_org  = "ortelius"
 github_repo = "pdvd-platform"
+domain = "eks.deployhub.com"
