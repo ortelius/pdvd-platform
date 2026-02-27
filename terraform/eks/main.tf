@@ -29,6 +29,11 @@ variable "aws_region"   { default = "us-east-1" }
 variable "cluster_name" { default = "pdvd-eks" }
 variable "vpc_cidr"     { default = "10.0.0.0/16" }
 
+variable "domain" {
+  description = "Primary domain name for the application"
+  default     = "app.deployhub.com"
+}
+
 variable "github_org"  { default = "ortelius" }
 variable "github_repo" { default = "pdvd-platform" }
 variable "github_token" {
@@ -47,9 +52,53 @@ provider "github" {
   token = var.github_token
 }
 
+# ── Check if cluster already exists via AWS CLI ───────────────────────────────
+data "external" "cluster_check" {
+  program = ["bash", "-c", <<-CMD
+    STATUS=$(aws eks describe-cluster --name ${var.cluster_name} --region ${var.aws_region} \
+      --query 'cluster.status' --output text 2>/dev/null || echo "NOT_FOUND")
+    if [ "$STATUS" = "ACTIVE" ]; then
+      echo '{"exists":"true"}'
+    else
+      echo '{"exists":"false"}'
+    fi
+  CMD
+  ]
+}
 
-# ── VPC ───────────────────────────────────────────────────────────────────────
+# ── Existing cluster data sources (only queried when cluster exists) ───────────
+data "aws_eks_cluster" "existing" {
+  count = data.external.cluster_check.result.exists == "true" ? 1 : 0
+  name  = var.cluster_name
+}
+
+data "aws_vpc" "existing" {
+  count = data.external.cluster_check.result.exists == "true" ? 1 : 0
+  tags  = { Name = "${var.cluster_name}-vpc" }
+}
+
+data "aws_subnets" "existing_public" {
+  count = data.external.cluster_check.result.exists == "true" ? 1 : 0
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.existing[0].id]
+  }
+  tags = { "kubernetes.io/role/elb" = "1" }
+}
+
+# ── Locals to unify references regardless of whether cluster pre-existed ───────
+locals {
+  cluster_exists    = data.external.cluster_check.result.exists == "true"
+  cluster_endpoint  = local.cluster_exists ? data.aws_eks_cluster.existing[0].endpoint                      : module.eks[0].cluster_endpoint
+  cluster_ca        = local.cluster_exists ? data.aws_eks_cluster.existing[0].certificate_authority[0].data : module.eks[0].cluster_certificate_authority_data
+  cluster_oidc_url  = local.cluster_exists ? data.aws_eks_cluster.existing[0].identity[0].oidc[0].issuer    : module.eks[0].cluster_oidc_issuer_url
+  vpc_id            = local.cluster_exists ? data.aws_vpc.existing[0].id                                    : module.vpc[0].vpc_id
+  public_subnet_ids = local.cluster_exists ? data.aws_subnets.existing_public[0].ids                        : module.vpc[0].public_subnets
+}
+
+# ── VPC (skipped when cluster already exists) ─────────────────────────────────
 module "vpc" {
+  count   = local.cluster_exists ? 0 : 1
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.0"
 
@@ -74,16 +123,17 @@ module "vpc" {
   }
 }
 
-# ── EKS ───────────────────────────────────────────────────────────────────────
+# ── EKS (skipped when cluster already exists) ─────────────────────────────────
 module "eks" {
+  count   = local.cluster_exists ? 0 : 1
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 20.0"
 
   cluster_name    = var.cluster_name
   cluster_version = "1.35"
 
-  vpc_id                         = module.vpc.vpc_id
-  subnet_ids                     = module.vpc.private_subnets
+  vpc_id                         = module.vpc[0].vpc_id
+  subnet_ids                     = module.vpc[0].private_subnets
   cluster_endpoint_public_access = true
 
   eks_managed_node_groups = {
@@ -99,7 +149,7 @@ module "eks" {
 
 # ── OIDC provider (for ALB controller IRSA role) ─────────────────────────────
 data "aws_iam_openid_connect_provider" "eks" {
-  url        = module.eks.cluster_oidc_issuer_url
+  url        = local.cluster_oidc_url
   depends_on = [module.eks]
 }
 
@@ -121,7 +171,7 @@ data "aws_iam_policy_document" "alb_assume" {
     }
     condition {
       test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
+      variable = "${replace(local.cluster_oidc_url, "https://", "")}:sub"
       values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
     }
   }
@@ -408,10 +458,9 @@ resource "null_resource" "flux_bootstrap" {
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
-output "cluster_name"            { value = module.eks.cluster_name }
-output "cluster_endpoint"        { value = module.eks.cluster_endpoint }
-output "cluster_oidc_issuer_url" { value = module.eks.cluster_oidc_issuer_url }
-output "vpc_id"                  { value = module.vpc.vpc_id }
-output "public_subnet_ids"       { value = module.vpc.public_subnets }
+output "cluster_name"            { value = var.cluster_name }
+output "cluster_endpoint"        { value = local.cluster_endpoint }
+output "vpc_id"                  { value = local.vpc_id }
+output "public_subnet_ids"       { value = local.public_subnet_ids }
 output "alb_controller_role_arn" { value = aws_iam_role.alb_controller.arn }
 output "acm_certificate_arn"     { value = aws_acm_certificate.app.arn }

@@ -8,4 +8,3 @@ cluster_name = "pdvd-gke"
 
 github_org  = "ortelius"
 github_repo = "pdvd-platform"
-domain = "app.deployhub.com"
