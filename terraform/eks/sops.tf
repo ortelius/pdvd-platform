@@ -119,7 +119,9 @@ creation_rules:
 SOPS
 
       cd "$REPO_ROOT"
+      git stash || true
       git pull --rebase origin main
+      git stash pop || true
       git add clusters/.sops.yaml
       if ! git diff --cached --quiet; then
         git commit -m "chore: update .sops.yaml with age public key for ${var.cluster_name}"
@@ -176,7 +178,9 @@ patches:
 KUST
 
       cd "$REPO_ROOT"
+      git stash || true
       git pull --rebase origin main
+      git stash pop || true
       git add clusters/eks/flux-system/kustomization.yaml
       if ! git diff --cached --quiet; then
         git commit -m "chore(eks): patch kustomize-controller to use sops-age secret"

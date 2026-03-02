@@ -383,7 +383,9 @@ resource "null_resource" "git_pull" {
     command = <<-CMD
       REPO_ROOT=$(git -C "${path.module}" rev-parse --show-toplevel)
       cd "$REPO_ROOT"
+      git stash || true
       git pull --rebase origin main
+      git stash pop || true
     CMD
     environment = {
       GITHUB_TOKEN = var.github_token
