@@ -51,6 +51,8 @@ provider "github" {
   token = var.github_token
 }
 
+data "aws_caller_identity" "current" {}
+
 # ── Check if cluster already exists via AWS CLI ───────────────────────────────
 data "external" "cluster_check" {
   program = ["bash", "-c", <<-CMD
@@ -93,6 +95,9 @@ locals {
   cluster_oidc_url  = local.cluster_exists ? data.aws_eks_cluster.existing[0].identity[0].oidc[0].issuer    : module.eks[0].cluster_oidc_issuer_url
   vpc_id            = local.cluster_exists ? data.aws_vpc.existing[0].id                                    : module.vpc[0].vpc_id
   public_subnet_ids = local.cluster_exists ? data.aws_subnets.existing_public[0].ids                        : module.vpc[0].public_subnets
+
+  # FIX: Safely construct the OIDC Provider ARN to avoid 409 and "not found" errors
+  oidc_provider_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${replace(local.cluster_oidc_url, "https://", "")}"
 }
 
 # ── VPC (skipped when cluster already exists) ─────────────────────────────────
@@ -135,7 +140,7 @@ module "eks" {
   subnet_ids                     = module.vpc[0].private_subnets
   cluster_endpoint_public_access = true
 
-  # FIX: Gives the IAM user running terraform admin permissions inside the cluster
+  # FIX: Grant the IAM user running Terraform admin permissions to execute kubectl commands
   enable_cluster_creator_admin_permissions = true
 
   eks_managed_node_groups = {
@@ -149,22 +154,7 @@ module "eks" {
   }
 }
 
-# ── OIDC provider (for ALB controller IRSA role) ─────────────────────────────
-# FIX: The OIDC provider must be explicitly created in AWS to resolve the "not found" error.
-data "tls_certificate" "eks" {
-  url = local.cluster_oidc_url
-}
-
-resource "aws_iam_openid_connect_provider" "eks" {
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
-  url             = local.cluster_oidc_url
-}
-
 # ── IAM: AWS Load Balancer Controller ─────────────────────────────────────────
-# Download the policy JSON before applying:
-#   curl -o alb-controller-iam-policy.json \
-#     https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
 resource "aws_iam_policy" "alb_controller" {
   name   = "${var.cluster_name}-alb-controller-policy"
   policy = file("${path.module}/alb-controller-iam-policy.json")
@@ -175,7 +165,7 @@ data "aws_iam_policy_document" "alb_assume" {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+      identifiers = [local.oidc_provider_arn]
     }
     condition {
       test     = "StringEquals"
@@ -206,9 +196,6 @@ resource "aws_acm_certificate" "app" {
 }
 
 # ── Flux Bootstrap ────────────────────────────────────────────────────────────
-# Uses null_resource + CLI instead of the flux provider to avoid token expiry
-# issues during long applies. Requires flux CLI and aws CLI on the machine
-# running terraform.
 resource "tls_private_key" "flux" {
   algorithm   = "ECDSA"
   ecdsa_curve = "P384"
