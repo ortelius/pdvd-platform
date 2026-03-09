@@ -96,121 +96,8 @@ locals {
   vpc_id            = local.cluster_exists ? data.aws_vpc.existing[0].id                                    : module.vpc[0].vpc_id
   public_subnet_ids = local.cluster_exists ? data.aws_subnets.existing_public[0].ids                        : module.vpc[0].public_subnets
 
-  # FIX: Safely construct the OIDC Provider ARN to avoid 409 and "not found" errors
   oidc_provider_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${replace(local.cluster_oidc_url, "https://", "")}"
-}
 
-# ── VPC (skipped when cluster already exists) ─────────────────────────────────
-module "vpc" {
-  count   = local.cluster_exists ? 0 : 1
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
-
-  name = "${var.cluster_name}-vpc"
-  cidr = var.vpc_cidr
-
-  azs             = ["${var.aws_region}a", "${var.aws_region}c"]
-  public_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]
-  private_subnets = ["10.0.10.0/24", "10.0.12.0/24"]
-
-  enable_nat_gateway   = true
-  single_nat_gateway   = true
-  enable_dns_hostnames = true
-
-  public_subnet_tags = {
-    "kubernetes.io/role/elb"                    = "1"
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-  }
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb"           = "1"
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-  }
-}
-
-# ── EKS (skipped when cluster already exists) ─────────────────────────────────
-module "eks" {
-  count   = local.cluster_exists ? 0 : 1
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
-
-  cluster_name    = var.cluster_name
-  cluster_version = "1.35"
-
-  vpc_id                         = module.vpc[0].vpc_id
-  subnet_ids                     = module.vpc[0].private_subnets
-  cluster_endpoint_public_access = true
-
-  # FIX: Grant the IAM user running Terraform admin permissions to execute kubectl commands
-  enable_cluster_creator_admin_permissions = true
-
-  eks_managed_node_groups = {
-    default = {
-      instance_types = ["t3.small"]
-      capacity_type  = "SPOT"
-      min_size       = 2
-      max_size       = 4
-      desired_size   = 2
-    }
-  }
-}
-
-# ── IAM: AWS Load Balancer Controller ─────────────────────────────────────────
-resource "aws_iam_policy" "alb_controller" {
-  name   = "${var.cluster_name}-alb-controller-policy"
-  policy = file("${path.module}/alb-controller-iam-policy.json")
-}
-
-data "aws_iam_policy_document" "alb_assume" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    principals {
-      type        = "Federated"
-      identifiers = [local.oidc_provider_arn]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(local.cluster_oidc_url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
-    }
-  }
-}
-
-resource "aws_iam_role" "alb_controller" {
-  name               = "${var.cluster_name}-alb-controller"
-  assume_role_policy = data.aws_iam_policy_document.alb_assume.json
-}
-
-resource "aws_iam_role_policy_attachment" "alb_controller" {
-  role       = aws_iam_role.alb_controller.name
-  policy_arn = aws_iam_policy.alb_controller.arn
-}
-
-# ── ACM Certificate ───────────────────────────────────────────────────────────
-resource "aws_acm_certificate" "app" {
-  domain_name       = "app.deployhub.com"
-  validation_method = "DNS"
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-# ── Flux Bootstrap ────────────────────────────────────────────────────────────
-resource "tls_private_key" "flux" {
-  algorithm   = "ECDSA"
-  ecdsa_curve = "P384"
-}
-
-resource "github_repository_deploy_key" "flux_eks" {
-  title      = "flux-eks"
-  repository = var.github_repo
-  key        = tls_private_key.flux.public_key_openssh
-  read_only  = false
-}
-
-# Write bootstrap script to a file so shell variable expansion works correctly
-# without conflicting with Terraform's interpolation syntax
-locals {
   bootstrap_script = <<-SCRIPT
     #!/usr/bin/env bash
     set -euo pipefail
@@ -368,7 +255,115 @@ locals {
   SCRIPT
 }
 
-# ── Git pull before writing values.yaml ───────────────────────────────────────
+# ── VPC (skipped when cluster already exists) ─────────────────────────────────
+module "vpc" {
+  count   = local.cluster_exists ? 0 : 1
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = "${var.cluster_name}-vpc"
+  cidr = var.vpc_cidr
+
+  azs             = ["${var.aws_region}a", "${var.aws_region}c"]
+  public_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]
+  private_subnets = ["10.0.10.0/24", "10.0.12.0/24"]
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = true
+  enable_dns_hostnames = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+  }
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+  }
+}
+
+# ── EKS (skipped when cluster already exists) ─────────────────────────────────
+module "eks" {
+  count   = local.cluster_exists ? 0 : 1
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.0"
+
+  cluster_name    = var.cluster_name
+  cluster_version = "1.35"
+
+  vpc_id                         = module.vpc[0].vpc_id
+  subnet_ids                     = module.vpc[0].private_subnets
+  cluster_endpoint_public_access = true
+
+  # This natively ensures your IAM caller receives K8s Admin permissions
+  enable_cluster_creator_admin_permissions = true
+  authentication_mode                      = "API_AND_CONFIG_MAP"
+
+  eks_managed_node_groups = {
+    default = {
+      instance_types = ["t3.small"]
+      capacity_type  = "SPOT"
+      min_size       = 2
+      max_size       = 4
+      desired_size   = 2
+    }
+  }
+}
+
+# ── IAM: AWS Load Balancer Controller ─────────────────────────────────────────
+resource "aws_iam_policy" "alb_controller" {
+  name   = "${var.cluster_name}-alb-controller-policy"
+  policy = file("${path.module}/alb-controller-iam-policy.json")
+}
+
+data "aws_iam_policy_document" "alb_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(local.cluster_oidc_url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "aws_iam_role" "alb_controller" {
+  name               = "${var.cluster_name}-alb-controller"
+  assume_role_policy = data.aws_iam_policy_document.alb_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "alb_controller" {
+  role       = aws_iam_role.alb_controller.name
+  policy_arn = aws_iam_policy.alb_controller.arn
+}
+
+# ── ACM Certificate ───────────────────────────────────────────────────────────
+resource "aws_acm_certificate" "app" {
+  domain_name       = "app.deployhub.com"
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ── Flux Bootstrap ────────────────────────────────────────────────────────────
+resource "tls_private_key" "flux" {
+  algorithm   = "ECDSA"
+  ecdsa_curve = "P384"
+}
+
+resource "github_repository_deploy_key" "flux_eks" {
+  title      = "flux-eks"
+  repository = var.github_repo
+  key        = tls_private_key.flux.public_key_openssh
+  read_only  = false
+}
+
 resource "null_resource" "git_pull" {
   triggers = {
     always = timestamp()
