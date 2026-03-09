@@ -6,7 +6,7 @@ pdvd-frontend:
     type: alb
     host: app.deployhub.com
     certificateArn: arn:aws:acm:us-east-1:754991274490:certificate/bdc0b819-ff8c-403e-924c-41620ce44043
-    subnets: "subnet-069c7b8928f724e19,subnet-0976b21eb1c7d77af"
+    subnets: ""
 
 pdvd-backend:
   ingress:
@@ -14,7 +14,7 @@ pdvd-backend:
     type: alb
     host: app.deployhub.com
     certificateArn: arn:aws:acm:us-east-1:754991274490:certificate/bdc0b819-ff8c-403e-924c-41620ce44043
-    subnets: "subnet-069c7b8928f724e19,subnet-0976b21eb1c7d77af"
+    subnets: ""
   rbac_repo: https://github.com/ortelius/pdvd-rbac
   apiBaseUrl: https://app.deployhub.com/api
   github:

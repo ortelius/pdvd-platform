@@ -20,7 +20,6 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
-
   }
 }
 
@@ -136,6 +135,9 @@ module "eks" {
   subnet_ids                     = module.vpc[0].private_subnets
   cluster_endpoint_public_access = true
 
+  # FIX: Gives the IAM user running terraform admin permissions inside the cluster
+  enable_cluster_creator_admin_permissions = true
+
   eks_managed_node_groups = {
     default = {
       instance_types = ["t3.small"]
@@ -148,9 +150,15 @@ module "eks" {
 }
 
 # ── OIDC provider (for ALB controller IRSA role) ─────────────────────────────
-data "aws_iam_openid_connect_provider" "eks" {
-  url        = local.cluster_oidc_url
-  depends_on = [module.eks]
+# FIX: The OIDC provider must be explicitly created in AWS to resolve the "not found" error.
+data "tls_certificate" "eks" {
+  url = local.cluster_oidc_url
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
+  url             = local.cluster_oidc_url
 }
 
 # ── IAM: AWS Load Balancer Controller ─────────────────────────────────────────
@@ -167,7 +175,7 @@ data "aws_iam_policy_document" "alb_assume" {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [data.aws_iam_openid_connect_provider.eks.arn]
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
     }
     condition {
       test     = "StringEquals"
