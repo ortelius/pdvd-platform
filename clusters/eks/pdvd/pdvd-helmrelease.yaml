@@ -1,0 +1,24 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: pdvd
+  namespace: flux-system   
+spec:
+  interval: 5m
+  targetNamespace: pdvd     
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: pdvd
+      version: ">=12.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: pdvd-charts
+        namespace: flux-system
+      interval: 5m
+  valuesFrom:
+    - kind: ConfigMap
+      name: pdvd-values
+    - kind: Secret
+      name: pdvd-secrets
