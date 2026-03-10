@@ -45,12 +45,12 @@ ensure_secrets() {
     echo "Generating age key: $KEY_FILE"
     mkdir -p "$HOME/.ssh" && age-keygen -o "$KEY_FILE" && chmod 600 "$KEY_FILE"
   fi
-  
+
   AGE_PUBKEY=$(grep "^# public key:" "$KEY_FILE" | awk '{print $4}')
-  
+
   if [ ! -f "$SECRETS_OUT" ]; then
     echo "--- Interactive Secret Setup for $CLUSTER ---"
-    
+
     cat > "$SCRIPT_DIR/../clusters/.sops.yaml" <<SOPS
 creation_rules:
   - path_regex: clusters/eks/.*\\.yaml$
@@ -67,9 +67,8 @@ SOPS
     echo "  pdvd-backend.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
     GH_KEY=$(cat)
 
-    TMP=$(mktemp)
-    
-    # FIX: Wrap the raw values in a valid Kubernetes Secret manifest
+    TMP=$(mktemp --suffix=.yaml)
+
     cat > "$TMP" <<YAML
 apiVersion: v1
 kind: Secret
@@ -91,8 +90,12 @@ $(echo "$GH_KEY" | sed 's/^/          /')
       password: "${SMTP_PASS}"
 YAML
 
-    # SOPS will detect this is a Kubernetes secret and only encrypt the stringData values
-    sops --encrypt --age "$AGE_PUBKEY" "$TMP" > "$SECRETS_OUT"
+    # --input-type yaml --output-type yaml ensures sops reads and writes YAML, not JSON
+    sops --encrypt \
+      --input-type yaml \
+      --output-type yaml \
+      --age "$AGE_PUBKEY" \
+      "$TMP" > "$SECRETS_OUT"
     rm "$TMP"
     echo "✓ Secrets encrypted and written to $SECRETS_OUT"
   fi
