@@ -41,6 +41,7 @@ ensure_tools() {
 
 ensure_secrets() {
   ensure_tools
+
   if [ ! -f "$KEY_FILE" ]; then
     echo "Generating age key: $KEY_FILE"
     mkdir -p "$HOME/.ssh" && age-keygen -o "$KEY_FILE" && chmod 600 "$KEY_FILE"
@@ -48,16 +49,17 @@ ensure_secrets() {
 
   AGE_PUBKEY=$(grep "^# public key:" "$KEY_FILE" | awk '{print $4}')
 
-  if [ ! -f "$SECRETS_OUT" ]; then
-    echo "--- Interactive Secret Setup for $CLUSTER ---"
-
-    cat > "$SCRIPT_DIR/../clusters/.sops.yaml" <<SOPS
+  # Always write .sops.yaml so it stays in sync with the current key
+  cat > "$SCRIPT_DIR/../clusters/.sops.yaml" <<SOPS
 creation_rules:
   - path_regex: clusters/eks/.*\\.yaml$
     age: $AGE_PUBKEY
   - path_regex: clusters/gke/.*\\.yaml$
     age: $AGE_PUBKEY
 SOPS
+
+  if [ ! -f "$SECRETS_OUT" ]; then
+    echo "--- Interactive Secret Setup for $CLUSTER ---"
 
     read -rp "  smtp.username                : " SMTP_USER
     read -rp "  pdvd-arangodb.arangodb_pass  : " DB_PASS
@@ -90,8 +92,10 @@ $(echo "$GH_KEY" | sed 's/^/          /')
       password: "${SMTP_PASS}"
 YAML
 
-    # --encrypted-regex limits encryption to data/stringData only so Flux
-    # can read apiVersion/kind/metadata without 'missing Resource metadata' errors
+    # --encrypted-regex ensures only stringData values are encrypted,
+    # leaving apiVersion/kind/metadata as plaintext so Flux can identify
+    # the resource type. Without this kustomize-controller stores the raw
+    # SOPS ciphertext instead of decrypting it.
     sops --encrypt \
       --input-type yaml \
       --output-type yaml \
@@ -100,7 +104,10 @@ YAML
       "$TMP" > "$SECRETS_OUT"
     rm "$TMP"
 
-    # Commit secrets.enc.yaml and .sops.yaml together
+    # Verify the output has plaintext metadata before committing
+    echo "Verifying encryption (apiVersion should be plaintext):"
+    head -4 "$SECRETS_OUT"
+
     REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
     cd "$REPO_ROOT"
     git add clusters/.sops.yaml "$SECRETS_OUT"

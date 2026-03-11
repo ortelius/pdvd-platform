@@ -53,6 +53,7 @@ variable "github_repo" {
   description = "GitHub repository name for the platform (e.g. pdvd-platform)"
   type        = string
 }
+
 variable "github_token" {
   description = "GitHub PAT with repo + admin:public_key scopes"
   type        = string
@@ -247,7 +248,14 @@ locals {
 
     SECRETS_FILE="$REPO_ROOT/clusters/eks/pdvd/secrets.enc.yaml"
     if [ ! -f "$SECRETS_FILE" ]; then
-      echo "ERROR: $SECRETS_FILE not found."
+      echo "ERROR: $SECRETS_FILE not found. Run deploy.sh first to encrypt secrets."
+      exit 1
+    fi
+
+    # Verify secrets.enc.yaml has plaintext metadata (not fully encrypted)
+    if ! head -1 "$SECRETS_FILE" | grep -q "^apiVersion:"; then
+      echo "ERROR: $SECRETS_FILE appears to be fully encrypted (missing plaintext apiVersion)."
+      echo "Delete it and re-run deploy.sh to re-encrypt with --encrypted-regex."
       exit 1
     fi
 

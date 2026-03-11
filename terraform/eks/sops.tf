@@ -1,8 +1,9 @@
 /*
   sops.tf — EKS SOPS decryption via age key
 
-  Note: Age key generation and .sops.yaml creation are handled
-  by deploy.sh prior to Terraform running.
+  Age key generation and .sops.yaml creation are handled by deploy.sh
+  prior to Terraform running. This file applies the key to the cluster
+  and patches kustomize-controller to use it.
 */
 
 resource "null_resource" "sops_age_secret" {
@@ -28,7 +29,7 @@ resource "null_resource" "sops_age_secret" {
         --from-file=age.agekey="$KEY_FILE" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-      echo "sops-age secret applied in flux-system"
+      echo "✓ sops-age secret applied in flux-system"
     CMD
 
     environment = {
@@ -86,7 +87,7 @@ KUST
       if ! git diff --cached --quiet; then
         git commit -m "chore(eks): patch kustomize-controller to use sops-age secret"
         git push --set-upstream origin main
-        echo "kustomization.yaml committed"
+        echo "✓ kustomization.yaml committed"
       else
         echo "kustomization.yaml unchanged"
       fi
