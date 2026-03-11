@@ -5,6 +5,7 @@
 aws_region   = "us-east-1"
 cluster_name = "pdvd-eks"
 vpc_cidr     = "10.0.0.0/16"
+domain       = "eks.deployhub.com"
 
 github_org  = "ortelius"
 github_repo = "pdvd-platform"
