@@ -96,6 +96,22 @@ module "vpc" {
   }
 }
 
+# ── IAM: EBS CSI Driver ───────────────────────────────────────────────────────
+module "ebs_csi_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name             = "${var.cluster_name}-ebs-csi"
+  attach_ebs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa"]
+    }
+  }
+}
+
 # ── EKS ───────────────────────────────────────────────────────────────────────
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
@@ -110,6 +126,14 @@ module "eks" {
 
   enable_cluster_creator_admin_permissions = true
   authentication_mode                      = "API_AND_CONFIG_MAP"
+
+  # Install the EBS CSI Driver addon natively and bind the IAM role
+  cluster_addons = {
+    aws-ebs-csi-driver = {
+      service_account_role_arn = module.ebs_csi_irsa_role.iam_role_arn
+      most_recent              = true
+    }
+  }
 
   eks_managed_node_groups = {
     default = {
@@ -240,7 +264,7 @@ locals {
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║           pdvd-platform EKS Bootstrap                       ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
-    echo "║  Cluster : ${var.cluster_name}                                      ║"
+    echo "║  Cluster : ${var.cluster_name}                                       ║"
     echo "║  Region  : ${var.aws_region}                                        ║"
     echo "║  Repo    : ${var.github_org}/${var.github_repo}                           ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
@@ -316,7 +340,9 @@ locals {
       --branch=main \
       --path=clusters/eks \
       --personal \
-      --components-extra=image-reflector-controller,image-automation-controller
+      --components-extra=image-reflector-controller,image-automation-controller \
+      --decryption-provider=sops \
+      --decryption-secret=sops-age
   SCRIPT
 }
 
@@ -347,6 +373,7 @@ resource "null_resource" "flux_bootstrap" {
     local_file.bootstrap_script,
     local_file.pdvd_values,
     null_resource.sops_age_secret_pre_bootstrap,
+    module.ebs_csi_irsa_role # Ensure role is ready before bootstrap scripts trigger
   ]
 }
 
