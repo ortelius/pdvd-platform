@@ -340,9 +340,7 @@ locals {
       --branch=main \
       --path=clusters/eks \
       --personal \
-      --components-extra=image-reflector-controller,image-automation-controller \
-      --decryption-provider=sops \
-      --decryption-secret=sops-age
+      --components-extra=image-reflector-controller,image-automation-controller
   SCRIPT
 }
 
