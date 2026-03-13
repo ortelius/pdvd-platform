@@ -1,11 +1,8 @@
-# clusters/eks/flux-system/kustomization.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - gotk-components.yaml
   - gotk-sync.yaml
-  - aws-lbc-helmrepository.yaml
-  - aws-lbc-helmrelease.yaml
 patches:
   - patch: |
       apiVersion: apps/v1
