@@ -138,7 +138,7 @@ module "eks" {
   eks_managed_node_groups = {
     default = {
       instance_types = ["t4g.medium"]
-      ami_type       = "AL2023_ARM_64_STANDARD"
+      ami_type       = "BOTTLEROCKET_ARM_64"
       capacity_type  = "SPOT"
       min_size       = 2
       max_size       = 4
