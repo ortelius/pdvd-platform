@@ -9,3 +9,6 @@ domain       = "eks.deployhub.com"
 
 github_org  = "ortelius"
 github_repo = "pdvd-platform"
+
+dns_provider  = "cloudflare"      # Change to "route53" if using AWs DNS
+dns_zone_name = "deployhub.com"   # The parent hosted zone for the cluster domain

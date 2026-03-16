@@ -20,44 +20,31 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
   }
 }
 
 # ── Variables ─────────────────────────────────────────────────────────────────
-variable "aws_region" {
-  description = "AWS region to deploy into (e.g. us-east-1)"
-  type        = string
-}
-
-variable "cluster_name" {
-  description = "EKS cluster name (e.g. pdvd-eks)"
-  type        = string
-}
-
-variable "vpc_cidr" {
-  description = "CIDR block for the VPC (e.g. 10.0.0.0/16)"
-  type        = string
-}
-
-variable "domain" {
-  description = "Public domain name for the application (e.g. app.deployhub.com)"
-  type        = string
-}
-
-variable "github_org" {
-  description = "GitHub organisation owning the platform repo (e.g. ortelius)"
-  type        = string
-}
-
-variable "github_repo" {
-  description = "GitHub repository name for the platform (e.g. pdvd-platform)"
-  type        = string
-}
-
+variable "aws_region" { type = string }
+variable "cluster_name" { type = string }
+variable "vpc_cidr" { type = string }
+variable "domain" { type = string }
+variable "github_org" { type = string }
+variable "github_repo" { type = string }
 variable "github_token" {
-  description = "GitHub PAT with repo + admin:public_key scopes"
-  type        = string
-  sensitive   = true
+  type      = string
+  sensitive = true
+}
+
+variable "dns_provider" { type = string }
+variable "dns_zone_name" { type = string }
+variable "cloudflare_api_token" {
+  type      = string
+  default   = ""
+  sensitive = true
 }
 
 # ── Providers ─────────────────────────────────────────────────────────────────
@@ -68,6 +55,10 @@ provider "aws" {
 provider "github" {
   owner = var.github_org
   token = var.github_token
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 # ── VPC ───────────────────────────────────────────────────────────────────────
@@ -127,7 +118,6 @@ module "eks" {
   enable_cluster_creator_admin_permissions = true
   authentication_mode                      = "API_AND_CONFIG_MAP"
 
-  # Install the EBS CSI Driver addon natively and bind the IAM role
   cluster_addons = {
     aws-ebs-csi-driver = {
       service_account_role_arn = module.ebs_csi_irsa_role.iam_role_arn
@@ -178,14 +168,82 @@ resource "aws_iam_role_policy_attachment" "alb_controller" {
   policy_arn = aws_iam_policy.alb_controller.arn
 }
 
-# ── ACM Certificate ───────────────────────────────────────────────────────────
+# ── IAM: ExternalDNS (Only for Route 53) ──────────────────────────────────────
+data "aws_route53_zone" "this" {
+  count        = var.dns_provider == "route53" ? 1 : 0
+  name         = var.dns_zone_name
+  private_zone = false
+}
+
+module "external_dns_irsa_role" {
+  count   = var.dns_provider == "route53" ? 1 : 0
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name                     = "${var.cluster_name}-external-dns"
+  attach_external_dns_policy    = true
+  external_dns_hosted_zone_arns = [data.aws_route53_zone.this[0].arn]
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:external-dns"]
+    }
+  }
+}
+
+# ── ACM Certificate & Validation ──────────────────────────────────────────────
 resource "aws_acm_certificate" "app" {
   domain_name       = var.domain
   validation_method = "DNS"
+  lifecycle { create_before_destroy = true }
+}
 
-  lifecycle {
-    create_before_destroy = true
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.app.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    } if var.dns_provider == "route53"
   }
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = data.aws_route53_zone.this[0].zone_id
+}
+
+data "cloudflare_zone" "this" {
+  count = var.dns_provider == "cloudflare" ? 1 : 0
+  name  = var.dns_zone_name
+}
+
+resource "cloudflare_record" "cert_validation" {
+  for_each = {
+      for dvo in aws_acm_certificate.app.domain_validation_options : dvo.domain_name => {
+        name   = trimsuffix(dvo.resource_record_name, ".")
+        record = dvo.resource_record_value
+        type   = dvo.resource_record_type
+      } if var.dns_provider == "cloudflare"
+  }
+
+  zone_id = data.cloudflare_zone.this[0].id
+  name    = each.value.name
+  content = each.value.record
+  type    = each.value.type
+  proxied = false
+}
+
+resource "aws_acm_certificate_validation" "app" {
+  certificate_arn = aws_acm_certificate.app.arn
+  validation_record_fqdns = var.dns_provider == "route53" ? [
+    for record in aws_route53_record.cert_validation : record.fqdn
+  ] : [
+    for record in cloudflare_record.cert_validation : record.hostname
+  ]
 }
 
 # ── Flux Bootstrap ────────────────────────────────────────────────────────────
@@ -224,7 +282,7 @@ resource "local_file" "pdvd_values" {
         enabled: true
         type: alb
         host: ${var.domain}
-        certificateArn: ${aws_acm_certificate.app.arn}
+        certificateArn: ${aws_acm_certificate_validation.app.certificate_arn}
         subnets: "${join(",", module.vpc.public_subnets)}"
 
     pdvd-backend:
@@ -232,7 +290,7 @@ resource "local_file" "pdvd_values" {
         enabled: true
         type: alb
         host: ${var.domain}
-        certificateArn: ${aws_acm_certificate.app.arn}
+        certificateArn: ${aws_acm_certificate_validation.app.certificate_arn}
         subnets: "${join(",", module.vpc.public_subnets)}"
       rbac_repo: https://github.com/${var.github_org}/pdvd-rbac
       apiBaseUrl: https://${var.domain}/api
@@ -242,7 +300,7 @@ resource "local_file" "pdvd_values" {
         org: ${var.github_org}
   YAML
 
-  depends_on = [aws_acm_certificate.app, null_resource.git_pull]
+  depends_on = [aws_acm_certificate_validation.app, null_resource.git_pull]
 }
 
 locals {
@@ -263,11 +321,11 @@ locals {
 
     echo ""
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║           pdvd-platform EKS Bootstrap                       ║"
+    echo "║           pdvd-platform EKS Bootstrap                        ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
-    echo "║  Cluster : ${var.cluster_name}                                       ║"
-    echo "║  Region  : ${var.aws_region}                                        ║"
-    echo "║  Repo    : ${var.github_org}/${var.github_repo}                           ║"
+    echo "║  Cluster : ${var.cluster_name}                               ║"
+    echo "║  Region  : ${var.aws_region}                                 ║"
+    echo "║  Repo    : ${var.github_org}/${var.github_repo}              ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
 
@@ -277,14 +335,12 @@ locals {
       exit 1
     fi
 
-    # Verify secrets.enc.yaml has plaintext metadata (not fully encrypted)
     if ! head -1 "$SECRETS_FILE" | grep -q "^apiVersion:"; then
       echo "ERROR: $SECRETS_FILE appears to be fully encrypted (missing plaintext apiVersion)."
       echo "Delete it and re-run deploy.sh to re-encrypt with --encrypted-regex."
       exit 1
     fi
 
-    echo "Platform: $OS/$ARCH_AMD"
     if ! command -v aws &>/dev/null; then
       echo "Installing aws CLI..."
       curl -fsSL "https://awscli.amazonaws.com/awscli-exe-$OS-$ARCH_AMD.zip" -o /tmp/awscliv2.zip
@@ -372,7 +428,7 @@ resource "null_resource" "flux_bootstrap" {
     local_file.bootstrap_script,
     local_file.pdvd_values,
     null_resource.sops_age_secret_pre_bootstrap,
-    module.ebs_csi_irsa_role # Ensure role is ready before bootstrap scripts trigger
+    module.ebs_csi_irsa_role
   ]
 }
 
@@ -382,4 +438,9 @@ output "cluster_endpoint"        { value = module.eks.cluster_endpoint }
 output "vpc_id"                  { value = module.vpc.vpc_id }
 output "public_subnet_ids"       { value = module.vpc.public_subnets }
 output "alb_controller_role_arn" { value = aws_iam_role.alb_controller.arn }
-output "acm_certificate_arn"     { value = aws_acm_certificate.app.arn }
+output "acm_certificate_arn"     { value = aws_acm_certificate_validation.app.certificate_arn }
+
+# The ExternalDNS IAM role ARN (if using Route 53)
+output "external_dns_role_arn" {
+  value = var.dns_provider == "route53" ? module.external_dns_irsa_role[0].iam_role_arn : null
+}

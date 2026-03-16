@@ -92,10 +92,6 @@ $(echo "$GH_KEY" | sed 's/^/          /')
       password: "${SMTP_PASS}"
 YAML
 
-    # --encrypted-regex ensures only stringData values are encrypted,
-    # leaving apiVersion/kind/metadata as plaintext so Flux can identify
-    # the resource type. Without this kustomize-controller stores the raw
-    # SOPS ciphertext instead of decrypting it.
     sops --encrypt \
       --input-type yaml \
       --output-type yaml \
@@ -144,28 +140,14 @@ case "$ACTION" in
     echo ""
     echo "── Outputs ──────────────────────────────"
     terraform output
-
+    
     if [[ "$CLUSTER" == "eks" ]]; then
       DOMAIN=$(grep 'domain' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
-      REGION=$(grep 'aws_region' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
-
-      echo "Waiting for ALB hostname..."
-      aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION"
-      ALB_HOST=""
-      for i in $(seq 1 30); do
-        ALB_HOST=$(kubectl get ingress -n pdvd pdvd-frontend-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-        [[ -n "$ALB_HOST" ]] && break
-        echo "  Attempt $i/30 — ALB not ready yet, retrying in 10s..."
-        sleep 10
-      done
-
-      if [[ -n "$ALB_HOST" ]]; then
-        echo "╔══════════════════════════════════════════════════════════════╗"
-        echo "║  DNS Setup Instructions                                      ║"
-        printf "║  Create a CNAME record: %-37s║\n" "$DOMAIN"
-        printf "║  Value: %-53s║\n" "$ALB_HOST"
-        echo "╚══════════════════════════════════════════════════════════════╝"
-      fi
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  DNS & ACM Setup Complete                                    ║"
+      echo "╠══════════════════════════════════════════════════════════════╣"
+      echo "║  ExternalDNS will now map ALB to: https://$DOMAIN"
+      echo "╚══════════════════════════════════════════════════════════════╝"
     fi
     ;;
   destroy)
