@@ -17,6 +17,10 @@ spec:
   install:
     createNamespace: true
   values:
+    image:
+      registry: registry.k8s.io
+      repository: external-dns/external-dns
+      tag: latest  
     provider: aws
     aws:
       zoneType: public
