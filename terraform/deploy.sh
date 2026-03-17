@@ -65,6 +65,9 @@ SOPS
     read -rp "  pdvd-arangodb.arangodb_pass  : " DB_PASS
     read -rp "  pdvd-backend.rbac_repo_token : " RBAC_TOKEN
     read -rp "  pdvd-backend.clientSecret    : " GH_SECRET
+    read -rp "  pdvd-backend.appId           : " GH_APP_ID
+    read -rp "  pdvd-backend.clientId        : " GH_CLIENT_ID
+    read -rp "  pdvd-backend.baseUrl         : " BASE_URL
     read -rp "  smtp.password                : " SMTP_PASS
     echo "  pdvd-backend.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
     GH_KEY=$(cat)
@@ -83,8 +86,11 @@ stringData:
     pdvd-arangodb:
       arangodb_pass: "${DB_PASS}"
     pdvd-backend:
+      baseUrl: "${BASE_URL}"
       rbac_repo_token: "${RBAC_TOKEN}"
       github:
+        appId: "${GH_APP_ID}"
+        clientId: "${GH_CLIENT_ID}"
         clientSecret: "${GH_SECRET}"
         privateKey: |
 $(echo "$GH_KEY" | sed 's/^/          /')
