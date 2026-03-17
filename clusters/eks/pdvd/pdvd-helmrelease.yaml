@@ -4,6 +4,9 @@ metadata:
   name: pdvd
   namespace: flux-system   
 spec:
+  dependsOn:
+    - name: aws-load-balancer-controller
+      namespace: flux-system
   interval: 5m
   targetNamespace: pdvd     
   install:

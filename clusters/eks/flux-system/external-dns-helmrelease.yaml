@@ -4,6 +4,9 @@ metadata:
   name: external-dns
   namespace: flux-system
 spec:
+  dependsOn:
+    - name: aws-load-balancer-controller
+      namespace: flux-system
   interval: 5m
   targetNamespace: kube-system
   chart:
