@@ -71,6 +71,7 @@ SOPS
 
     TMP=$(mktemp --suffix=.yaml)
 
+    # 1. Base secrets for the application (always created)
     cat > "$TMP" <<YAML
 apiVersion: v1
 kind: Secret
@@ -92,6 +93,23 @@ $(echo "$GH_KEY" | sed 's/^/          /')
       password: "${SMTP_PASS}"
 YAML
 
+    # 2. Conditionally append Cloudflare token for ExternalDNS
+    DNS_PROVIDER=$(grep 'dns_provider' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2 || echo "route53")
+    
+    if [[ "$DNS_PROVIDER" == "cloudflare" ]]; then
+      cat >> "$TMP" <<YAML
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pdvd-secrets
+  namespace: kube-system
+stringData:
+  cloudflare.apiToken: "${TF_VAR_cloudflare_api_token:-}"
+YAML
+    fi
+
+    # 3. Encrypt the combined file
     sops --encrypt \
       --input-type yaml \
       --output-type yaml \

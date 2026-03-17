@@ -9,16 +9,14 @@ spec:
   chart:
     spec:
       chart: external-dns
-      version: ">=1.14.0"   
+      version: ">=1.14.0"
       sourceRef:
         kind: HelmRepository
-        name: external-dns   
+        name: external-dns
         namespace: flux-system
   install:
     createNamespace: true
   values:
-    # (Keep your existing provider config here!)
-    # Example if you were using Cloudflare:
     provider: cloudflare
     txtOwnerId: pdvd-eks
     env:
