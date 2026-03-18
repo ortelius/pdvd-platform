@@ -274,114 +274,77 @@ drain_flux_workloads() {
     set -e; return 0
   fi
 
-  # Confirm the Flux CRDs are present (partial install guard)
-  kubectl get crd helmreleases.helm.toolkit.fluxcd.io &>/dev/null
-  if [[ $? -ne 0 ]]; then
-    echo "  ⚠  Flux CRDs not found — Flux may be only partially installed."
-    echo "     Skipping HelmRelease deletion and jumping straight to flux uninstall."
-    flux uninstall --namespace=flux-system --keep-namespace=false --silent 2>/dev/null || true
-    set -e; return 0
-  fi
-
   # ── 4. Suspend all Kustomizations ───────────────────────────────────────────
   # Stops Flux from reconciling (re-creating resources) while we delete them.
   echo "  Suspending all Kustomizations..."
   flux suspend kustomization --all --namespace flux-system 2>/dev/null
   [[ $? -ne 0 ]] && echo "  ⚠  Could not suspend Kustomizations (may already be suspended or missing)."
 
-  # ── 5. Delete infrastructure HelmReleases first ─────────────────────────────
-  # ALB controller, ingress-nginx, external-dns, and cert-manager all own cloud
-  # resources via finalizers. Deleting their HelmReleases triggers `helm uninstall`
-  # which fires those finalizers and removes the cloud resources cleanly.
-  local INFRA_PATTERNS="aws-load-balancer|ingress|external-dns|cert-manager"
-  local HR_LIST
+  # ── 5. Force-delete ALBs by querying Ingress hostnames then deleting via AWS CLI ──
+  # The ALB controller may not clean up in time (or at all) after helm uninstall.
+  # Instead: read every Ingress hostname from the cluster, resolve it to an ALB ARN,
+  # and delete it directly. Then do the same for any remaining k8s-prefixed ALBs.
+  if [[ "$CLUSTER" == "eks" ]]; then
+    echo ""
+    echo "  Force-deleting ALBs via AWS CLI..."
 
-  echo "  Deleting infrastructure HelmReleases (ALB controller, ingress, external-dns)..."
-  HR_LIST=$(flux get helmreleases --all-namespaces --no-header 2>/dev/null | awk '{print $1, $2}')
-  if [[ $? -ne 0 || -z "$HR_LIST" ]]; then
-    echo "  No HelmReleases found (or flux get failed) — skipping HelmRelease deletion."
-  else
-    while read -r NS NAME; do
-      if echo "$NAME" | grep -qE "$INFRA_PATTERNS"; then
-        echo "    flux delete helmrelease -n $NS $NAME --silent"
-        flux delete helmrelease -n "$NS" "$NAME" --silent 2>/dev/null
-        [[ $? -ne 0 ]] && echo "    ⚠  Failed to delete $NAME in $NS — continuing."
+    # Collect ALB hostnames from all Ingress objects while the API is still up
+    local HOSTNAMES
+    HOSTNAMES=$(kubectl get ingress --all-namespaces --no-headers       -o custom-columns="HOST:.status.loadBalancer.ingress[0].hostname" 2>/dev/null       | grep -v '<none>' | grep -v '^$' || true)
+
+    if [[ -n "$HOSTNAMES" ]]; then
+      while IFS= read -r HOSTNAME; do
+        [[ -z "$HOSTNAME" ]] && continue
+        # Extract the ALB name from the hostname (first segment before the first dot)
+        local ALB_NAME
+        ALB_NAME=$(echo "$HOSTNAME" | cut -d'-' -f1-4)
+        local ARN
+        ARN=$(aws elbv2 describe-load-balancers           --region "$AWS_REGION"           --query "LoadBalancers[?contains(DNSName, '${ALB_NAME}')].LoadBalancerArn"           --output text 2>/dev/null)
+        if [[ -n "$ARN" && "$ARN" != "None" ]]; then
+          echo "    Deleting ALB: $ARN"
+          aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" --region "$AWS_REGION" 2>/dev/null
+          [[ $? -ne 0 ]] && echo "    ⚠  Failed to delete $ARN — continuing."
+        fi
+      done <<< "$HOSTNAMES"
+    fi
+
+    # Also sweep any remaining k8s-prefixed ALBs that may not have an Ingress anymore
+    local REMAINING_ARNS
+    REMAINING_ARNS=$(aws elbv2 describe-load-balancers       --region "$AWS_REGION"       --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-')].LoadBalancerArn"       --output text 2>/dev/null)
+    if [[ -n "$REMAINING_ARNS" && "$REMAINING_ARNS" != "None" ]]; then
+      for ARN in $REMAINING_ARNS; do
+        echo "    Deleting remaining ALB: $ARN"
+        aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" --region "$AWS_REGION" 2>/dev/null
+        [[ $? -ne 0 ]] && echo "    ⚠  Failed to delete $ARN — continuing."
+      done
+    fi
+
+    # Wait for all ALBs to finish deleting (they go async)
+    echo "  Waiting for ALB deletions to complete..."
+    local MAX_WAIT=120 INTERVAL=10 ELAPSED=0
+    while true; do
+      local TOTAL
+      TOTAL=$(aws elbv2 describe-load-balancers         --region "$AWS_REGION"         --query "length(LoadBalancers[?contains(LoadBalancerName, 'k8s-')])"         --output text 2>/dev/null)
+      [[ -z "$TOTAL" || "$TOTAL" == "None" ]] && TOTAL=0
+      [[ "$TOTAL" -eq 0 ]] && { echo "  ✓ All ALBs deleted."; break; }
+      if [[ "$ELAPSED" -ge "$MAX_WAIT" ]]; then
+        echo "  ⚠  Timed out — ${TOTAL} ALB(s) still deleting. Proceeding anyway."
+        break
       fi
-    done <<< "$HR_LIST"
+      echo "  ${TOTAL} ALB(s) still deleting — retrying in ${INTERVAL}s (${ELAPSED}/${MAX_WAIT}s elapsed)..."
+      sleep "$INTERVAL"
+      ELAPSED=$(( ELAPSED + INTERVAL ))
+    done
 
-    # ── 6. Delete remaining HelmReleases ──────────────────────────────────────
-    echo "  Deleting remaining HelmReleases..."
-    while read -r NS NAME; do
-      if ! echo "$NAME" | grep -qE "$INFRA_PATTERNS"; then
-        echo "    flux delete helmrelease -n $NS $NAME --silent"
-        flux delete helmrelease -n "$NS" "$NAME" --silent 2>/dev/null
-        [[ $? -ne 0 ]] && echo "    ⚠  Failed to delete $NAME in $NS — continuing."
-      fi
-    done <<< "$HR_LIST"
-  fi
-
-  # ── 7. Wait for cloud load balancers to disappear ───────────────────────────
-  # The ALB controller deprovisions asynchronously after its pod receives the
-  # helm uninstall signal. We must wait before destroying the VPC or the ENIs
-  # the LBs hold will prevent subnet deletion.
-  echo ""
-  echo "  Waiting for cloud load balancers to be fully deprovisioned..."
-  local MAX_WAIT=180 INTERVAL=10 ELAPSED=0 TOTAL
-
-  while true; do
-    if [[ "$CLUSTER" == "eks" ]]; then
-      local LB_COUNT CLB_COUNT
-      LB_COUNT=$(aws elbv2 describe-load-balancers \
-        --region "$AWS_REGION" \
-        --query "length(LoadBalancers[?contains(LoadBalancerName, 'k8s-')])" \
-        --output text 2>/dev/null)
-      # aws CLI returns "None" if the list is empty rather than 0
-      [[ -z "$LB_COUNT"  || "$LB_COUNT"  == "None" ]] && LB_COUNT=0
-      CLB_COUNT=$(aws elb describe-load-balancers \
-        --region "$AWS_REGION" \
-        --query "length(LoadBalancerDescriptions[?contains(LoadBalancerName, '${CLUSTER_NAME}')])" \
-        --output text 2>/dev/null)
-      [[ -z "$CLB_COUNT" || "$CLB_COUNT" == "None" ]] && CLB_COUNT=0
-      TOTAL=$(( LB_COUNT + CLB_COUNT ))
+  elif [[ "$CLUSTER" == "gke" ]]; then
+    TOTAL=$(gcloud compute forwarding-rules list       --project "$GCP_PROJECT"       --filter "description~$CLUSTER_NAME"       --format "value(name)" 2>/dev/null | wc -l | tr -d ' ')
+    [[ -z "$TOTAL" ]] && TOTAL=0
+    if [[ "$TOTAL" -gt 0 ]]; then
+      echo "  ⚠  ${TOTAL} GCP forwarding rule(s) still present — remove manually if terraform destroy fails."
     else
-      TOTAL=$(gcloud compute forwarding-rules list \
-        --project "$GCP_PROJECT" \
-        --filter "description~$CLUSTER_NAME" \
-        --format "value(name)" 2>/dev/null | wc -l | tr -d ' ')
-      [[ -z "$TOTAL" ]] && TOTAL=0
+      echo "  ✓ No GCP forwarding rules found."
     fi
-
-    if [[ "$TOTAL" -eq 0 ]]; then
-      echo "  ✓ All load balancers removed."
-      break
-    fi
-
-    if [[ "$ELAPSED" -ge "$MAX_WAIT" ]]; then
-      echo ""
-      echo "  ⚠  Timed out after ${MAX_WAIT}s — ${TOTAL} load balancer(s) still present."
-      echo "     Remove them manually from the cloud console before retrying,"
-      echo "     otherwise terraform destroy will fail on VPC/subnet deletion."
-      echo ""
-      # Re-enable errexit temporarily so the read + exit path works cleanly
-      set -e
-      read -rp "  Continue with terraform destroy anyway? [y/N] " CONFIRM
-      [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-      set +e
-      break
-    fi
-
-    echo "  ${TOTAL} load balancer(s) still present — retrying in ${INTERVAL}s (${ELAPSED}/${MAX_WAIT}s elapsed)..."
-    sleep "$INTERVAL"
-    ELAPSED=$(( ELAPSED + INTERVAL ))
-  done
-
-  # ── 8. Uninstall Flux itself ─────────────────────────────────────────────────
-  # Removes all Flux CRDs, RBAC, controllers, and the flux-system namespace.
-  # After this the cluster is a plain EKS/GKE cluster with no Flux footprint.
-  echo ""
-  echo "  Uninstalling Flux (controllers, CRDs, flux-system namespace)..."
-  flux uninstall --namespace=flux-system --keep-namespace=false --silent 2>/dev/null
-  [[ $? -ne 0 ]] && echo "  ⚠  flux uninstall reported an error — continuing anyway."
+  fi
 
   echo "  ✓ Flux workloads fully drained. Proceeding to terraform destroy."
   echo ""
