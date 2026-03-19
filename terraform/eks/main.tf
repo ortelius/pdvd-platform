@@ -381,7 +381,6 @@ resource "local_file" "pdvd_values" {
     # via valuesFrom in clusters/eks/pdvd/helmrelease.yaml.
     pdvd-arangodb:
       cloudProvider: "eks"
-      availabilityZone: ""   # auto-patched by Terraform after first PVC bind
 
     pdvd-frontend:
       ingress:
@@ -596,100 +595,6 @@ resource "null_resource" "flux_bootstrap" {
   ]
 }
 
-# ── Auto-pin ArangoDB to the AZ where its PVC first binds ────────────────────
-# Runs after Flux bootstrap. Waits for the PVC to bind, reads the AZ from the
-# PV's node affinity, then patches values.yaml and commits so the StatefulSet
-# gains a nodeAffinity that survives Spot interruptions.
-resource "null_resource" "pin_arangodb_az" {
-  triggers = {
-    cluster_name = var.cluster_name
-  }
-
-  provisioner "local-exec" {
-    command = <<-CMD
-      REPO_ROOT=$(git -C "${path.module}" rev-parse --show-toplevel)
-      VALUES_FILE="$REPO_ROOT/clusters/eks/pdvd/values.yaml"
-
-      aws eks update-kubeconfig \
-        --name ${var.cluster_name} \
-        --region ${var.aws_region}
-
-      echo "Waiting for pdvd-arangodb PVC to bind..."
-      for i in $(seq 1 30); do
-        STATUS=$(kubectl get pvc \
-          -n pdvd \
-          --no-headers \
-          -o custom-columns="STATUS:.status.phase" 2>/dev/null \
-          | grep -v "^$" | head -1)
-
-        if [[ "$STATUS" == "Bound" ]]; then
-          echo "✓ PVC bound."
-          break
-        fi
-        echo "Attempt $i/30 — PVC status: '$STATUS', retrying in 10s..."
-        sleep 10
-      done
-
-      # Get the PV name from the first bound PVC in the pdvd namespace
-      PV_NAME=$(kubectl get pvc \
-        -n pdvd \
-        --no-headers \
-        -o custom-columns="PV:.spec.volumeName" 2>/dev/null \
-        | grep -v '<none>' | grep -v '^$' | head -1)
-
-      if [[ -z "$PV_NAME" ]]; then
-        echo "ERROR: Could not resolve PV name — skipping AZ pin."
-        exit 0
-      fi
-
-      # Extract the AZ from the PV's topology node affinity
-      AZ=$(kubectl get pv "$PV_NAME" \
-        -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[?(@.key=="topology.kubernetes.io/zone")].values[0]}')
-
-      if [[ -z "$AZ" ]]; then
-        echo "ERROR: Could not extract AZ from PV $PV_NAME — skipping AZ pin."
-        exit 0
-      fi
-
-      echo "PV $PV_NAME bound in AZ: $AZ — patching values.yaml"
-
-      # Install yq if needed
-      if ! command -v yq &>/dev/null; then
-        echo "Installing yq..."
-        YQ_VERSION=$(curl -fsSL https://api.github.com/repos/mikefarah/yq/releases/latest \
-          | grep tag_name | cut -d'"' -f4)
-        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-        ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-        sudo curl -fsSL \
-          "https://github.com/mikefarah/yq/releases/download/$YQ_VERSION/yq_$${OS}_$${ARCH}" \
-          -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
-      fi
-
-      yq e ".pdvd-arangodb.availabilityZone = \"$AZ\"" -i "$VALUES_FILE"
-
-      cd "$REPO_ROOT"
-      git stash || true
-      git pull --rebase origin main
-      git stash pop || true
-
-      git add "$VALUES_FILE"
-      if ! git diff --cached --quiet; then
-        git commit -m "chore(eks): pin pdvd-arangodb to AZ $AZ after PVC bind"
-        git push --set-upstream origin main
-        echo "✓ availabilityZone patched to $AZ and committed"
-      else
-        echo "availabilityZone already correct — no commit needed"
-      fi
-    CMD
-
-    environment = {
-      AWS_DEFAULT_REGION = var.aws_region
-      GITHUB_TOKEN       = var.github_token
-    }
-  }
-
-  depends_on = [null_resource.flux_bootstrap]
-}
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
 output "cluster_name"            { value = var.cluster_name }
