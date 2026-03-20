@@ -9,6 +9,9 @@ override.tf.json        # Local overrides in JSON
 *.tfvars                # Variable files with sensitive data
 *.tfvars.json           # JSON variable files
 *.bak
+.terraform.lock.hcl
+bootstrap.sh
+.terraform.tfstate.lock.info
 
 # Ignore CLI configuration
 .terraformrc

@@ -79,7 +79,15 @@ resource "null_resource" "sops_age_secret_post_bootstrap" {
   depends_on = [null_resource.flux_bootstrap]
 }
 
-# Step 3: Patch kustomize-controller and commit kustomization.yaml
+# Step 3: Write kustomization.yaml and commit
+#
+# flux-system kustomization: patches kustomize-controller with sops-age secret
+#   and enables SOPS decryption on the flux-system Kustomization.
+#
+# pdvd kustomization: separate Kustomization for the pdvd path with dependsOn
+#   flux-system so the ALB controller and external-dns are ready before pdvd
+#   HelmReleases are reconciled. Prevents silent failures when pdvd deploys
+#   before its infrastructure dependencies are ready.
 resource "null_resource" "flux_sops_patch" {
   triggers = {
     cluster_name = var.cluster_name
@@ -132,21 +140,73 @@ patches:
       name: flux-system
 KUST
 
+      # Write the pdvd Kustomization as a separate file so it can declare
+      # dependsOn without touching the flux-system Kustomization object.
+      PDVD_KUST_FILE="$REPO_ROOT/clusters/eks/flux-system/pdvd-kustomization.yaml"
+      cat > "$PDVD_KUST_FILE" <<PDVDKUST
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: pdvd
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./clusters/eks/pdvd
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  decryption:
+    provider: sops
+  dependsOn:
+    - name: flux-system
+PDVDKUST
+
+      # Add pdvd-kustomization.yaml to the flux-system kustomization resources
+      # so Flux picks it up. Use awk to insert after gotk-sync.yaml line.
+      if ! grep -q "pdvd-kustomization.yaml" "$KUST_FILE"; then
+        sed -i 's/  - gotk-sync.yaml/  - gotk-sync.yaml\n  - pdvd-kustomization.yaml/' "$KUST_FILE"
+      fi
+
       cd "$REPO_ROOT"
       git stash || true
       git pull --rebase origin main
       git stash pop || true
 
+      # Remove the old duplicate helmrelease.yaml if it exists
+      if [ -f "$REPO_ROOT/clusters/eks/pdvd/helmrelease.yaml" ]; then
+        git rm --force "$REPO_ROOT/clusters/eks/pdvd/helmrelease.yaml" 2>/dev/null || \
+          rm -f "$REPO_ROOT/clusters/eks/pdvd/helmrelease.yaml"
+        echo "✓ Removed duplicate clusters/eks/pdvd/helmrelease.yaml"
+      fi
+
       git add clusters/eks/flux-system/kustomization.yaml
+      git add clusters/eks/flux-system/pdvd-kustomization.yaml
       git add clusters/.sops.yaml || true
 
       if ! git diff --cached --quiet; then
-        git commit -m "chore(eks): patch kustomize-controller to use sops-age secret"
+        git commit -m "chore(eks): patch kustomize-controller, add pdvd Kustomization with dependsOn"
         git push --set-upstream origin main
-        echo "✓ kustomization.yaml committed"
+        echo "✓ kustomization.yaml and pdvd-kustomization.yaml committed"
       else
-        echo "kustomization.yaml unchanged"
+        echo "kustomization files unchanged"
       fi
+
+      # ── Age key backup warning ────────────────────────────────────────────
+      KEY_FILE="$HOME/.ssh/${var.cluster_name}.sops.key"
+      echo ""
+      echo "╔══════════════════════════════════════════════════════════════════╗"
+      echo "║  ⚠  IMPORTANT: Back up your age private key                     ║"
+      echo "╠══════════════════════════════════════════════════════════════════╣"
+      echo "║  Location : $KEY_FILE"
+      echo "║                                                                  ║"
+      echo "║  This is the ONLY copy of the key that decrypts all secrets     ║"
+      echo "║  in the repository. If this file is lost, secrets in the repo   ║"
+      echo "║  are permanently unreadable and must be re-encrypted.           ║"
+      echo "║                                                                  ║"
+      echo "║  Suggested: copy to a password manager or secure vault now.     ║"
+      echo "╚══════════════════════════════════════════════════════════════════╝"
+      echo ""
     CMD
 
     environment = {
