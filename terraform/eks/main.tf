@@ -744,7 +744,13 @@ resource "null_resource" "vpc_dependency_sweep" {
     }
   }
 
-  depends_on = [module.vpc]
+  # Destroy ordering: this depends on module.eks so that in the reverse
+  # (destroy) graph the sweep runs AFTER EKS is fully torn down but
+  # BEFORE the VPC module is destroyed.  By the time the sweep fires,
+  # EKS has already released most ENIs and SGs — the sweep only needs
+  # to mop up true orphans (ALB controller SGs, k8s-traffic-* SGs,
+  # stale ENIs) that would otherwise block VPC deletion.
+  depends_on = [module.eks]
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
