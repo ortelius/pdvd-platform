@@ -1,7 +1,8 @@
 /*
   sops.tf — GKE SOPS decryption via age key
 
-  Generates an age keypair (X25519 / ed25519-based elliptic curve).
+  Generates an age keypair (X25519 / ed25519-based elliptic curve)
+  or reuses an existing AWS/EKS key if present.
   The private key is persisted to $HOME/.ssh/<cluster_name>.sops.key
   and stored as a Kubernetes Secret in flux-system so kustomize-controller
   can decrypt SOPS-encrypted files without any cloud IAM, KMS, or
@@ -37,11 +38,19 @@ resource "null_resource" "age_keygen" {
       fi
 
       if [ ! -f "$KEY_FILE" ]; then
-        echo "Generating age keypair -> $KEY_FILE"
-        mkdir -p "$HOME/.ssh"
-        age-keygen -o "$KEY_FILE"
-        chmod 600 "$KEY_FILE"
-        echo "Age key generated: $KEY_FILE"
+        # Check if an AWS/EKS key exists to share the same identity
+        EKS_KEY=$(ls $HOME/.ssh/*eks*.sops.key 2>/dev/null | head -n 1)
+        
+        if [ -n "$EKS_KEY" ]; then
+          echo "Found existing AWS age key ($EKS_KEY). Copying to $KEY_FILE to share identity..."
+          cp "$EKS_KEY" "$KEY_FILE"
+        else
+          echo "Generating age keypair -> $KEY_FILE"
+          mkdir -p "$HOME/.ssh"
+          age-keygen -o "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "Age key generated: $KEY_FILE"
+        fi
       else
         echo "Age key already exists: $KEY_FILE"
       fi
@@ -51,8 +60,6 @@ resource "null_resource" "age_keygen" {
       echo "Public key: $(cat /tmp/${var.cluster_name}-age-pubkey.txt)"
     CMD
   }
-
-  depends_on = [flux_bootstrap_git.gke]
 }
 
 data "local_file" "age_pubkey" {
@@ -60,7 +67,8 @@ data "local_file" "age_pubkey" {
   depends_on = [null_resource.age_keygen]
 }
 
-resource "null_resource" "sops_age_secret" {
+# Step 1: Create sops-age secret BEFORE Flux bootstrap
+resource "null_resource" "sops_age_secret_pre_bootstrap" {
   triggers = {
     cluster_name = var.cluster_name
   }
@@ -73,6 +81,9 @@ resource "null_resource" "sops_age_secret" {
         --region ${var.region} \
         --project ${var.project_id}
 
+      # Create namespace if it doesn't exist yet
+      kubectl create namespace flux-system --dry-run=client -o yaml | kubectl apply -f -
+
       kubectl create secret generic sops-age \
         --namespace=flux-system \
         --from-literal=SOPS_AGE_KEY="$(cat $KEY_FILE)" \
@@ -82,10 +93,11 @@ resource "null_resource" "sops_age_secret" {
     CMD
   }
 
-  depends_on = [null_resource.age_keygen]
+  depends_on = [null_resource.age_keygen, google_container_node_pool.default]
 }
 
-resource "null_resource" "sops_yaml" {
+# Step 2: Push Git commits AFTER Flux bootstrap
+resource "null_resource" "sops_yaml_post_bootstrap" {
   triggers = {
     cluster_name = var.cluster_name
   }
@@ -122,10 +134,10 @@ SOPS
     }
   }
 
-  depends_on = [null_resource.age_keygen]
+  depends_on = [flux_bootstrap_git.gke]
 }
 
-resource "null_resource" "flux_sops_patch" {
+resource "null_resource" "flux_sops_patch_post_bootstrap" {
   triggers = {
     cluster_name = var.cluster_name
   }
@@ -180,7 +192,7 @@ KUST
     }
   }
 
-  depends_on = [null_resource.sops_age_secret, null_resource.sops_yaml]
+  depends_on = [flux_bootstrap_git.gke, null_resource.sops_yaml_post_bootstrap]
 }
 
 output "age_public_key" {

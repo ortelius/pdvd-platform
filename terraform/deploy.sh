@@ -54,8 +54,14 @@ ensure_secrets() {
   ensure_tools
 
   if [ ! -f "$KEY_FILE" ]; then
-    echo "Generating age key: $KEY_FILE"
-    mkdir -p "$HOME/.ssh" && age-keygen -o "$KEY_FILE" && chmod 600 "$KEY_FILE"
+    EKS_KEY=$(ls "$HOME"/.ssh/*eks*.sops.key 2>/dev/null | head -n 1)
+    if [ -n "$EKS_KEY" ]; then
+      echo "Found existing AWS age key ($EKS_KEY). Copying to $KEY_FILE..."
+      cp "$EKS_KEY" "$KEY_FILE"
+    else
+      echo "Generating age key: $KEY_FILE"
+      mkdir -p "$HOME/.ssh" && age-keygen -o "$KEY_FILE" && chmod 600 "$KEY_FILE"
+    fi
   fi
 
   AGE_PUBKEY=$(grep "^# public key:" "$KEY_FILE" | awk '{print $4}')
