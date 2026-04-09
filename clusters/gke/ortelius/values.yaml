@@ -1,11 +1,11 @@
-# clusters/gke/pdvd/values.yaml
-# Plain (non-secret) values for the pdvd HelmRelease on GKE.
+# clusters/gke/ortelius/values.yaml
+# Plain (non-secret) values for the ortelius HelmRelease on GKE.
 # Merged with secrets.enc.yaml by FluxCD before passing to Helm.
 #
 # Secret values (rbac_repo_token, github.clientSecret, github.privateKey,
 # smtp.username, smtp.password, arangodb_pass) live in secrets.enc.yaml.
 
-pdvd-frontend:
+frontend:
   graphqlEndpoint: "https://app.deployhub.com/api/v1/graphql"
   restapiEndpoint: "https://app.deployhub.com/api/v1"
   ingress:
@@ -13,11 +13,11 @@ pdvd-frontend:
     host: "app.deployhub.com"
     staticIP: "static-app-ip"   # google_compute_global_address.app.name from terraform
 
-pdvd-backend:
+prtelius:
   ingress:
     type: glb
     host: "app.deployhub.com"
-  rbac_repo: "https://github.com/ortelius/pdvd-rbac.git"
+  rbac_repo: "https://github.com/ortelius/rbac.git"
   apiBaseUrl: "https://app.deployhub.com"
   baseUrl: "https://app.deployhub.com"
   github:
@@ -32,5 +32,5 @@ pdvd-backend:
     fromName: "Steve Taylor"
     # username and password come from secrets.enc.yaml
 
-pdvd-arangodb: {}   # password comes from secrets.enc.yaml
+arangodb: {}   # password comes from secrets.enc.yaml
 

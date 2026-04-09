@@ -17,7 +17,7 @@ usage() {
 
 WORKDIR="$SCRIPT_DIR/$CLUSTER"
 CLUSTER_NAME=$(grep 'cluster_name' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
-SECRETS_OUT="$SCRIPT_DIR/../clusters/$CLUSTER/pdvd/secrets.enc.yaml"
+SECRETS_OUT="$SCRIPT_DIR/../clusters/$CLUSTER/ortelius/secrets.enc.yaml"
 KEY_FILE="$HOME/.ssh/${CLUSTER_NAME}.sops.key"
 
 ensure_tools() {
@@ -79,14 +79,14 @@ SOPS
     echo "--- Interactive Secret Setup for $CLUSTER ---"
 
     read -rp "  smtp.username                : " SMTP_USER
-    read -rp "  pdvd-arangodb.arangodb_pass  : " DB_PASS
-    read -rp "  pdvd-backend.rbac_repo_token : " RBAC_TOKEN
-    read -rp "  pdvd-backend.clientSecret    : " GH_SECRET
-    read -rp "  pdvd-backend.appId           : " GH_APP_ID
-    read -rp "  pdvd-backend.clientId        : " GH_CLIENT_ID
-    read -rp "  pdvd-backend.baseUrl         : " BASE_URL
+    read -rp "  arangodb.arangodb_pass  : " DB_PASS
+    read -rp "  prtelius.rbac_repo_token : " RBAC_TOKEN
+    read -rp "  prtelius.clientSecret    : " GH_SECRET
+    read -rp "  prtelius.appId           : " GH_APP_ID
+    read -rp "  prtelius.clientId        : " GH_CLIENT_ID
+    read -rp "  prtelius.baseUrl         : " BASE_URL
     read -rp "  smtp.password                : " SMTP_PASS
-    echo "  pdvd-backend.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
+    echo "  prtelius.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
     GH_KEY=$(cat)
 
     TMP=$(mktemp --suffix=.yaml)
@@ -96,13 +96,13 @@ SOPS
 apiVersion: v1
 kind: Secret
 metadata:
-  name: pdvd-secrets
+  name: ortelius-secrets
   namespace: flux-system
 stringData:
   values.yaml: |
-    pdvd-arangodb:
+    arangodb:
       arangodb_pass: "${DB_PASS}"
-    pdvd-backend:
+    prtelius:
       baseUrl: "${BASE_URL}"
       rbac_repo_token: "${RBAC_TOKEN}"
       github:
@@ -136,7 +136,7 @@ YAML
 apiVersion: v1
 kind: Secret
 metadata:
-  name: pdvd-secrets
+  name: ortelius-secrets
   namespace: kube-system
 stringData:
   cloudflare.apiToken: "${CF_TOKEN}"

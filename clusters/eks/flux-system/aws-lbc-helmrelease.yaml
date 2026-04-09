@@ -18,9 +18,9 @@ spec:
   install:
     createNamespace: true
   values:
-    clusterName: pdvd-eks
+    clusterName: ortelius-eks
     serviceAccount:
       create: true
       name: aws-load-balancer-controller
       annotations:
-        eks.amazonaws.com/role-arn: arn:aws:iam::754991274490:role/pdvd-eks-alb-controller
+        eks.amazonaws.com/role-arn: arn:aws:iam::754991274490:role/ortelius-eks-alb-controller

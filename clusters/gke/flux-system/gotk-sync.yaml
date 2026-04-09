@@ -11,7 +11,7 @@ spec:
     branch: main
   secretRef:
     name: flux-system
-  url: ssh://git@github.com/ortelius/pdvd-platform
+  url: ssh://git@github.com/ortelius/platform-iac
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

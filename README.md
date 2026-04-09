@@ -36,11 +36,11 @@ aws configure   # or set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_R
 
 ```hcl
 aws_region    = "us-east-1"         # AWS region
-cluster_name  = "pdvd-eks"          # EKS cluster name
+cluster_name  = "ortelius-eks"          # EKS cluster name
 vpc_cidr      = "10.0.0.0/16"       # VPC CIDR
 domain        = "eks.deployhub.com" # Domain for ACM cert and ingress
 github_org    = "ortelius"
-github_repo   = "pdvd-platform"
+github_repo   = "platform-iac"
 dns_provider  = "cloudflare"        # "cloudflare" or "route53"
 dns_zone_name = "deployhub.com"     # Parent DNS zone
 ```
@@ -50,9 +50,9 @@ dns_zone_name = "deployhub.com"     # Parent DNS zone
 ```hcl
 project_id   = "your-gcp-project-id"
 region       = "us-central1"
-cluster_name = "pdvd-gke"
+cluster_name = "ortelius-gke"
 github_org   = "ortelius"
-github_repo  = "pdvd-platform"
+github_repo  = "platform-iac"
 ```
 
 ---
@@ -79,19 +79,19 @@ The script requires `TF_VAR_github_token` to be set in the environment before ru
 
 ## Interactive Prompts During `deploy.sh`
 
-On the **first run**, `deploy.sh` generates an age encryption keypair and then prompts for all application secrets. These are encrypted with SOPS and committed to the repo as `clusters/<cluster>/pdvd/secrets.enc.yaml`.
+On the **first run**, `deploy.sh` generates an age encryption keypair and then prompts for all application secrets. These are encrypted with SOPS and committed to the repo as `clusters/<cluster>/ortelius/secrets.enc.yaml`.
 
 | Prompt | Description |
 |---|---|
 | `smtp.username` | SMTP email address for outbound mail |
-| `pdvd-arangodb.arangodb_pass` | ArangoDB root password |
-| `pdvd-backend.rbac_repo_token` | GitHub PAT for the RBAC config repo |
-| `pdvd-backend.clientSecret` | GitHub OAuth app client secret |
-| `pdvd-backend.appId` | GitHub App ID |
-| `pdvd-backend.clientId` | GitHub OAuth app client ID |
-| `pdvd-backend.baseUrl` | Public base URL (e.g. `https://eks.deployhub.com`) |
+| `arangodb.arangodb_pass` | ArangoDB root password |
+| `prtelius.rbac_repo_token` | GitHub PAT for the RBAC config repo |
+| `prtelius.clientSecret` | GitHub OAuth app client secret |
+| `prtelius.appId` | GitHub App ID |
+| `prtelius.clientId` | GitHub OAuth app client ID |
+| `prtelius.baseUrl` | Public base URL (e.g. `https://eks.deployhub.com`) |
 | `smtp.password` | SMTP account password |
-| `pdvd-backend.privateKey` | GitHub App private key (paste PEM block, then Ctrl-D) |
+| `prtelius.privateKey` | GitHub App private key (paste PEM block, then Ctrl-D) |
 | `cloudflare.apiToken` *(EKS + Cloudflare only)* | Cloudflare API token for ExternalDNS (or set `TF_VAR_cloudflare_api_token`) |
 
 The age private key is saved to `~/.ssh/<cluster-name>.sops.key`. **Back this up — losing it means losing access to all encrypted secrets.**
@@ -111,7 +111,7 @@ Subsequent runs skip the prompts if `secrets.enc.yaml` already exists.
 7. Injects the `sops-age` Kubernetes secret into `flux-system` before Flux bootstrap
 8. Runs `flux bootstrap github` — installs Flux controllers and registers a deploy key
 9. Writes and commits `clusters/<cluster>/flux-system/kustomization.yaml` with the SOPS patch
-10. Flux reconciles the stack: ALB/GLB controller → ExternalDNS → pdvd HelmRelease
+10. Flux reconciles the stack: ALB/GLB controller → ExternalDNS → ortelius HelmRelease
 
 ### After `eks apply` — DNS Setup
 
@@ -128,7 +128,7 @@ aws acm describe-certificate \
 ## Directory Structure
 
 ```
-pdvd-platform/
+platform-iac/
 ├── terraform/
 │   ├── deploy.sh                        # Single entrypoint — run this to install Ortelius
 │   ├── eks/
@@ -144,12 +144,12 @@ pdvd-platform/
     ├── .sops.yaml                       # age public key routing (written by deploy.sh)
     ├── eks/
     │   ├── flux-system/                 # Flux controllers and kustomizations
-    │   └── pdvd/
+    │   └── ortelius/
     │       ├── values.yaml              # Auto-written by Terraform with cert ARN + subnets
     │       └── secrets.enc.yaml        # ← SOPS-encrypted secrets (written by deploy.sh)
     └── gke/
         ├── flux-system/
-        └── pdvd/
+        └── ortelius/
             ├── values.yaml
             └── secrets.enc.yaml        # ← SOPS-encrypted secrets (written by deploy.sh)
 ```
@@ -163,19 +163,19 @@ pdvd-platform/
 kubectl get pods -n flux-system
 
 # Check application pods
-kubectl get pods -n pdvd
+kubectl get pods -n ortelius
 
 # Check HelmRelease status
-kubectl get helmrelease -n pdvd
+kubectl get helmrelease -n ortelius
 
 # Check ingress
-kubectl get ingress -n pdvd
+kubectl get ingress -n ortelius
 ```
 
 Expected HelmRelease output:
 ```
 NAME            READY   STATUS
-pdvd-frontend   True    Release reconciliation succeeded
-pdvd-backend    True    Release reconciliation succeeded
-pdvd-arangodb   True    Release reconciliation succeeded
+frontend   True    Release reconciliation succeeded
+prtelius    True    Release reconciliation succeeded
+arangodb   True    Release reconciliation succeeded
 ```

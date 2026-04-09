@@ -3,7 +3,7 @@ kind: Kustomization
 resources:
   - gotk-components.yaml
   - gotk-sync.yaml
-  - pdvd-kustomization.yaml
+  - kustomization.yaml
   - aws-lbc-helmrepository.yaml
   - aws-lbc-helmrelease.yaml
   - external-dns-helmrepository.yaml

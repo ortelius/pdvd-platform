@@ -1,4 +1,4 @@
-# pdvd-platform — Terraform
+# platform-iac — Terraform
 
 Provisions cluster infrastructure and bootstraps FluxCD in a single `terraform apply`.
 
@@ -56,7 +56,7 @@ terraform apply \
 1. VPC, subnet, static IP created
 2. GKE cluster + node pool created
 3. Flux SSH key pair generated
-4. Deploy key registered on `ortelius/pdvd-platform`
+4. Deploy key registered on `ortelius/platform-iac`
 5. `flux_bootstrap_git` connects to the cluster, installs Flux controllers
    into `clusters/gke/flux-system/`, and commits `gotk-components.yaml` to the repo
 6. KMS key ring + crypto key created
@@ -119,7 +119,7 @@ terraform apply \
 4. ALB controller IAM policy + role created
 5. ACM certificate requested (DNS validation — add the CNAME to your DNS provider)
 6. Flux SSH key pair generated
-7. Deploy key registered on `ortelius/pdvd-platform`
+7. Deploy key registered on `ortelius/platform-iac`
 8. `flux_bootstrap_git` connects to the cluster, installs Flux controllers
    into `clusters/eks/flux-system/`, and commits `gotk-components.yaml` to the repo
 9. KMS key + alias created
@@ -141,7 +141,7 @@ patches:
       name: kustomize-controller
 ```
 
-Update `clusters/eks/pdvd/values.yaml` with infrastructure outputs:
+Update `clusters/eks/ortelius/values.yaml` with infrastructure outputs:
 ```bash
 terraform output -raw acm_certificate_arn    # → ingress.certificateArn
 terraform output -json public_subnet_ids | jq -r 'join(",")' # → ingress.subnets
@@ -164,6 +164,6 @@ creation_rules:
 | `kms_key_id` (GKE) | `.sops.yaml` `gcp_kms` |
 | `flux_sops_role_arn` (EKS) | `kustomize-controller` SA annotation |
 | `kms_key_arn` (EKS) | `.sops.yaml` `aws_kms` |
-| `acm_certificate_arn` (EKS) | `clusters/eks/pdvd/values.yaml` `ingress.certificateArn` |
-| `public_subnet_ids` (EKS) | `clusters/eks/pdvd/values.yaml` `ingress.subnets` |
-| `alb_controller_role_arn` (EKS) | `clusters/eks/pdvd/aws-load-balancer-controller.yaml` SA annotation |
+| `acm_certificate_arn` (EKS) | `clusters/eks/ortelius/values.yaml` `ingress.certificateArn` |
+| `public_subnet_ids` (EKS) | `clusters/eks/ortelius/values.yaml` `ingress.subnets` |
+| `alb_controller_role_arn` (EKS) | `clusters/eks/ortelius/aws-load-balancer-controller.yaml` SA annotation |

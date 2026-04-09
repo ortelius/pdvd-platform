@@ -22,10 +22,10 @@ terraform {
 # ── Variables ─────────────────────────────────────────────────────────────────
 variable "project_id"   { default = "eighth-physics-169321" }
 variable "region"       { default = "us-central1" }
-variable "cluster_name" { default = "pdvd-gke" }
+variable "cluster_name" { default = "ortelius-gke" }
 
 variable "github_org"  { default = "ortelius" }
-variable "github_repo" { default = "pdvd-platform" }
+variable "github_repo" { default = "platform-iac" }
 variable "github_token" {
   description = "GitHub PAT with repo + admin:public_key scopes"
   type        = string

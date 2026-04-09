@@ -84,9 +84,9 @@ resource "null_resource" "sops_age_secret_post_bootstrap" {
 # flux-system kustomization: patches kustomize-controller with sops-age secret
 #   and enables SOPS decryption on the flux-system Kustomization.
 #
-# pdvd kustomization: separate Kustomization for the pdvd path with dependsOn
-#   flux-system so the ALB controller and external-dns are ready before pdvd
-#   HelmReleases are reconciled. Prevents silent failures when pdvd deploys
+# ortelius kustomization: separate Kustomization for the ortelius path with dependsOn
+#   flux-system so the ALB controller and external-dns are ready before ortelius
+#   HelmReleases are reconciled. Prevents silent failures when ortelius deploys
 #   before its infrastructure dependencies are ready.
 resource "null_resource" "flux_sops_patch" {
   triggers = {
@@ -140,18 +140,18 @@ patches:
       name: flux-system
 KUST
 
-      # Write the pdvd Kustomization as a separate file so it can declare
+      # Write the ortelius Kustomization as a separate file so it can declare
       # dependsOn without touching the flux-system Kustomization object.
-      PDVD_KUST_FILE="$REPO_ROOT/clusters/eks/flux-system/pdvd-kustomization.yaml"
-      cat > "$PDVD_KUST_FILE" <<PDVDKUST
+      ORTELIUS_KUST_FILE="$REPO_ROOT/clusters/eks/flux-system/kustomization.yaml"
+      cat > "$ORTELIUS_KUST_FILE" <<ORTELIUSKUST
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: pdvd
+  name: ortelius
   namespace: flux-system
 spec:
   interval: 10m
-  path: ./clusters/eks/pdvd
+  path: ./clusters/eks/ortelius
   prune: true
   sourceRef:
     kind: GitRepository
@@ -160,12 +160,12 @@ spec:
     provider: sops
   dependsOn:
     - name: flux-system
-PDVDKUST
+ORTELIUSKUST
 
-      # Add pdvd-kustomization.yaml to the flux-system kustomization resources
+      # Add kustomization.yaml to the flux-system kustomization resources
       # so Flux picks it up. Use awk to insert after gotk-sync.yaml line.
-      if ! grep -q "pdvd-kustomization.yaml" "$KUST_FILE"; then
-        sed -i 's/  - gotk-sync.yaml/  - gotk-sync.yaml\n  - pdvd-kustomization.yaml/' "$KUST_FILE"
+      if ! grep -q "kustomization.yaml" "$KUST_FILE"; then
+        sed -i 's/  - gotk-sync.yaml/  - gotk-sync.yaml\n  - kustomization.yaml/' "$KUST_FILE"
       fi
 
       cd "$REPO_ROOT"
@@ -174,20 +174,20 @@ PDVDKUST
       git stash pop || true
 
       # Remove the old duplicate helmrelease.yaml if it exists
-      if [ -f "$REPO_ROOT/clusters/eks/pdvd/helmrelease.yaml" ]; then
-        git rm --force "$REPO_ROOT/clusters/eks/pdvd/helmrelease.yaml" 2>/dev/null || \
-          rm -f "$REPO_ROOT/clusters/eks/pdvd/helmrelease.yaml"
-        echo "✓ Removed duplicate clusters/eks/pdvd/helmrelease.yaml"
+      if [ -f "$REPO_ROOT/clusters/eks/ortelius/helmrelease.yaml" ]; then
+        git rm --force "$REPO_ROOT/clusters/eks/ortelius/helmrelease.yaml" 2>/dev/null || \
+          rm -f "$REPO_ROOT/clusters/eks/ortelius/helmrelease.yaml"
+        echo "✓ Removed duplicate clusters/eks/ortelius/helmrelease.yaml"
       fi
 
       git add clusters/eks/flux-system/kustomization.yaml
-      git add clusters/eks/flux-system/pdvd-kustomization.yaml
+      git add clusters/eks/flux-system/kustomization.yaml
       git add clusters/.sops.yaml || true
 
       if ! git diff --cached --quiet; then
-        git commit -m "chore(eks): patch kustomize-controller, add pdvd Kustomization with dependsOn"
+        git commit -m "chore(eks): patch kustomize-controller, add ortelius Kustomization with dependsOn"
         git push --set-upstream origin main
-        echo "✓ kustomization.yaml and pdvd-kustomization.yaml committed"
+        echo "✓ kustomization.yaml and kustomization.yaml committed"
       else
         echo "kustomization files unchanged"
       fi

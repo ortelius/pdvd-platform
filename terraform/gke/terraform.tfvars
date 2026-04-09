@@ -8,4 +8,4 @@ cluster_name = "gke_eighth-physics-169321_us-central1-a_cluster-2"
 domain       = "app.deployhub.com"
 
 github_org  = "ortelius"
-github_repo = "pdvd-platform"
+github_repo = "platform-iac"
