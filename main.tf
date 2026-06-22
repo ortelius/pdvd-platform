@@ -22,7 +22,7 @@ terraform {
 # ── Variables ─────────────────────────────────────────────────────────────────
 variable "project_id"   { default = "eighth-physics-169321" }
 variable "region"       { default = "us-central1" }
-variable "cluster_name" { default = "ortelius-gke" }
+variable "cluster_name" { default = "deployhub" }
 
 variable "github_org"  { default = "ortelius" }
 variable "github_repo" { default = "platform-iac" }
@@ -30,6 +30,13 @@ variable "github_token" {
   description = "GitHub PAT with repo + admin:public_key scopes"
   type        = string
   sensitive   = true
+}
+
+# GitOps path this cluster's Flux instance reconciles. Kept separate from
+# clusters/gke/ (cluster-2's path) so both clusters can run simultaneously
+# during cutover without reconciling the same directory.
+variable "flux_path" {
+  default = "clusters/gke-2"
 }
 
 # ── Providers ─────────────────────────────────────────────────────────────────
@@ -87,7 +94,7 @@ resource "google_compute_subnetwork" "subnet" {
 
 # ── Static IP for GLB ─────────────────────────────────────────────────────────
 resource "google_compute_global_address" "app" {
-  name = "static-app-ip"
+  name = "${var.cluster_name}-static-app-ip"
 }
 
 # ── GKE Cluster ───────────────────────────────────────────────────────────────
@@ -101,7 +108,7 @@ resource "google_container_cluster" "primary" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  # Enable Dataplane V2
+  # Dataplane V2 (eBPF-based networking/NetworkPolicy) — required, do not remove.
   datapath_provider = "ADVANCED_DATAPATH"
 
   ip_allocation_policy {
@@ -121,23 +128,7 @@ resource "google_container_node_pool" "default" {
   node_count = 2
 
   node_config {
-    # ARM64 node pool. Note: n1-standard-2 is x86_64, so use an Arm machine type instead.
-    machine_type = "t2a-standard-2"
-
-    # Run nodes as Spot VMs.
-    spot = true
-
-    # Container-Optimized OS with containerd.
-    # GKE doesn't expose a simple Terraform "enable_fips" switch for node pools;
-    # this label records the intended compliance posture for workload scheduling/ops.
-    image_type = "COS_CONTAINERD"
-
-    labels = {
-      arch      = "arm64"
-      fips      = "enabled"
-      lifecycle = "spot"
-    }
-
+    machine_type = "e2-standard-2"
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
     workload_metadata_config {
       mode = "GKE_METADATA"
@@ -155,24 +146,23 @@ resource "tls_private_key" "flux" {
 }
 
 resource "github_repository_deploy_key" "flux_gke" {
-  title      = "flux-gke"
+  title      = "flux-${var.cluster_name}"
   repository = var.github_repo
   key        = tls_private_key.flux.public_key_openssh
   read_only  = false
 }
 
 resource "flux_bootstrap_git" "gke" {
-  # Flux will install its components into clusters/gke/flux-system/
-  # and watch clusters/gke/ for workload kustomizations
-  path = "clusters/gke"
+  # Flux watches var.flux_path (clusters/gke-2/ by default), NOT clusters/gke/ —
+  # kept separate so cluster-2's existing Flux instance is undisturbed during
+  # cutover/burn-in.
+  path = var.flux_path
 
   components_extra = ["image-reflector-controller", "image-automation-controller"]
 
-  # Ensure the cluster nodes are up and the deploy key exists before bootstrapping
   depends_on = [
     google_container_node_pool.default,
     github_repository_deploy_key.flux_gke,
-    null_resource.sops_age_secret_pre_bootstrap # ENFORCES SECRET INJECTION BEFORE BOOTSTRAP
   ]
 }
 
@@ -180,3 +170,4 @@ resource "flux_bootstrap_git" "gke" {
 output "cluster_name"     { value = google_container_cluster.primary.name }
 output "cluster_endpoint" { value = google_container_cluster.primary.endpoint }
 output "static_ip"        { value = google_compute_global_address.app.address }
+output "flux_path"        { value = var.flux_path }
