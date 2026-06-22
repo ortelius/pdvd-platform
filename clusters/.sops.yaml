@@ -1,0 +1,5 @@
+creation_rules:
+  - path_regex: clusters/eks/.*\.yaml224040
+    age: age1m7uketvs2yftsh43p7w2eq2cqxsm9eac3xazmg6d38nrkka4la2qkjyjk6
+  - path_regex: clusters/gke/.*\.yaml224040
+    age: age1m7uketvs2yftsh43p7w2eq2cqxsm9eac3xazmg6d38nrkka4la2qkjyjk6
