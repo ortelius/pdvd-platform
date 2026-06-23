@@ -5,30 +5,159 @@ set -euo pipefail
 CLUSTER="${1:-}"
 ACTION="${2:-apply}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
 
 usage() {
-  echo "Usage: $0 <gke|eks> [plan|apply|destroy]"
+  echo "Usage: $0 <gke|gke-2|eks> [plan|apply|destroy]"
+  echo "       Any cluster directory named gke* is treated as a GKE cluster."
   exit 1
 }
 
+is_gke_cluster() {
+  [[ "$CLUSTER" == gke* ]]
+}
+
 [[ -z "$CLUSTER" ]] && usage
-[[ "$CLUSTER" != "gke" && "$CLUSTER" != "eks" ]] && usage
+[[ "$CLUSTER" != "eks" ]] && ! is_gke_cluster && usage
 [[ -z "${TF_VAR_github_token:-}" ]] && { echo "ERROR: TF_VAR_github_token is not set"; exit 1; }
 
 WORKDIR="$SCRIPT_DIR/$CLUSTER"
+[[ ! -d "$WORKDIR" ]] && { echo "ERROR: Cluster directory not found: $WORKDIR"; exit 1; }
 CLUSTER_NAME=$(grep 'cluster_name' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
-SECRETS_OUT="$SCRIPT_DIR/../clusters/$CLUSTER/ortelius/secrets.enc.yaml"
-KEY_FILE="$HOME/.ssh/${CLUSTER_NAME}.sops.key"
+SECRETS_REL="clusters/$CLUSTER/ortelius/secrets.enc.yaml"
+SECRETS_OUT="$REPO_ROOT/$SECRETS_REL"
+SOPS_CONFIG="$REPO_ROOT/clusters/.sops.yaml"
+
+tfvar_from_dir() {
+  local cluster_dir="$1"
+  local key="$2"
+  grep -E "^[[:space:]]*${key}[[:space:]]*=" "$SCRIPT_DIR/$cluster_dir/terraform.tfvars" 2>/dev/null | tail -n 1 | cut -d'"' -f2
+}
+
+tfvar() {
+  local key="$1"
+  tfvar_from_dir "$CLUSTER" "$key"
+}
+
+gcp_kms_for_dir() {
+  local cluster_dir="$1"
+  local gcp_project cluster_name kms_location kms_keyring kms_key
+
+  if [[ -n "${SOPS_GCP_KMS:-}" ]]; then
+    echo "$SOPS_GCP_KMS"
+    return 0
+  fi
+
+  gcp_project="$(tfvar_from_dir "$cluster_dir" project_id)"
+  cluster_name="$(tfvar_from_dir "$cluster_dir" cluster_name)"
+  kms_location="${SOPS_GCP_KMS_LOCATION:-${SOPS_KMS_LOCATION:-global}}"
+  kms_keyring="${SOPS_GCP_KMS_KEYRING:-${SOPS_KMS_KEYRING:-sops}}"
+  kms_key="${SOPS_GCP_KMS_KEY:-${SOPS_KMS_KEY:-${cluster_name}-secrets}}"
+
+  echo "projects/${gcp_project}/locations/${kms_location}/keyRings/${kms_keyring}/cryptoKeys/${kms_key}"
+}
+
+ensure_gcp_sops_kms() {
+  # KMS is persistent bootstrap infrastructure. KeyRings cannot be deleted,
+  # and CryptoKey names cannot be quickly reused after destruction is scheduled,
+  # so keep KMS outside the disposable cluster lifecycle.
+  is_gke_cluster || return 0
+
+  if ! command -v gcloud &>/dev/null; then
+    echo "ERROR: gcloud is required to bootstrap GCP KMS for SOPS."
+    exit 1
+  fi
+
+  local gcp_project cluster_name kms_location kms_keyring kms_key active_account enabled_versions scheduled_versions
+
+  gcp_project="$(tfvar project_id)"
+  cluster_name="$(tfvar cluster_name)"
+  kms_location="${SOPS_GCP_KMS_LOCATION:-${SOPS_KMS_LOCATION:-global}}"
+  kms_keyring="${SOPS_GCP_KMS_KEYRING:-${SOPS_KMS_KEYRING:-sops}}"
+  kms_key="${SOPS_GCP_KMS_KEY:-${SOPS_KMS_KEY:-${cluster_name}-secrets}}"
+
+  if [[ -z "$gcp_project" || -z "$cluster_name" ]]; then
+    echo "ERROR: project_id and cluster_name must be set in $WORKDIR/terraform.tfvars"
+    exit 1
+  fi
+
+  if ! gcloud kms keyrings describe "$kms_keyring" \
+      --project "$gcp_project" \
+      --location "$kms_location" >/dev/null 2>&1; then
+    echo "Creating GCP KMS keyring: $kms_keyring"
+    gcloud kms keyrings create "$kms_keyring" \
+      --project "$gcp_project" \
+      --location "$kms_location"
+  else
+    echo "✓ GCP KMS keyring exists: $kms_keyring"
+  fi
+
+  if ! gcloud kms keys describe "$kms_key" \
+      --project "$gcp_project" \
+      --location "$kms_location" \
+      --keyring "$kms_keyring" >/dev/null 2>&1; then
+    echo "Creating GCP KMS crypto key: $kms_key"
+    gcloud kms keys create "$kms_key" \
+      --project "$gcp_project" \
+      --location "$kms_location" \
+      --keyring "$kms_keyring" \
+      --purpose encryption \
+      --rotation-period 90d
+  else
+    echo "✓ GCP KMS crypto key exists: $kms_key"
+  fi
+
+  enabled_versions="$(gcloud kms keys versions list \
+    --project "$gcp_project" \
+    --location "$kms_location" \
+    --keyring "$kms_keyring" \
+    --key "$kms_key" \
+    --filter 'state=ENABLED' \
+    --format 'value(name)' 2>/dev/null || true)"
+
+  if [[ -z "$enabled_versions" ]]; then
+    scheduled_versions="$(gcloud kms keys versions list \
+      --project "$gcp_project" \
+      --location "$kms_location" \
+      --keyring "$kms_keyring" \
+      --key "$kms_key" \
+      --filter 'state=DESTROY_SCHEDULED' \
+      --format 'value(name)' 2>/dev/null || true)"
+
+    if [[ -n "$scheduled_versions" ]]; then
+      echo "⚠  KMS key '$kms_key' has no ENABLED versions; restoring DESTROY_SCHEDULED versions..."
+      while IFS= read -r version_name; do
+        [[ -z "$version_name" ]] && continue
+        gcloud kms keys versions restore "$(basename "$version_name")" \
+          --project "$gcp_project" \
+          --location "$kms_location" \
+          --keyring "$kms_keyring" \
+          --key "$kms_key"
+      done <<< "$scheduled_versions"
+    else
+      echo "ERROR: KMS key '$kms_key' exists but has no ENABLED key versions."
+      echo "       Create a new key name with SOPS_GCP_KMS_KEY or inspect the key in GCP."
+      exit 1
+    fi
+  fi
+
+  # Best-effort: grant the active gcloud user encrypt/decrypt permission so SOPS can run
+  # before Terraform has applied IAM bindings.
+  active_account="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$active_account" ]]; then
+    gcloud kms keys add-iam-policy-binding "$kms_key" \
+      --project "$gcp_project" \
+      --location "$kms_location" \
+      --keyring "$kms_keyring" \
+      --member "user:${active_account}" \
+      --role roles/cloudkms.cryptoKeyEncrypterDecrypter >/dev/null 2>&1 || true
+  fi
+
+  export SOPS_GCP_KMS="projects/${gcp_project}/locations/${kms_location}/keyRings/${kms_keyring}/cryptoKeys/${kms_key}"
+  echo "✓ SOPS_GCP_KMS=$SOPS_GCP_KMS"
+}
 
 ensure_tools() {
-  if ! command -v age-keygen &>/dev/null; then
-    echo "Installing age..."
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-    VERSION=$(curl -fsSL https://api.github.com/repos/FiloSottile/age/releases/latest | grep tag_name | cut -d'"' -f4)
-    curl -fsSL "https://github.com/FiloSottile/age/releases/download/$VERSION/age-$VERSION-$OS-$ARCH.tar.gz" -o /tmp/age.tar.gz
-    tar -xzf /tmp/age.tar.gz -C /tmp && sudo mv /tmp/age/age* /usr/local/bin/ && rm -rf /tmp/age*
-  fi
   if ! command -v sops &>/dev/null; then
     echo "Installing sops..."
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -37,6 +166,78 @@ ensure_tools() {
     sudo curl -fsSL "https://github.com/getsops/sops/releases/download/$VERSION/sops-$VERSION.$OS.$ARCH" -o /usr/local/bin/sops
     sudo chmod +x /usr/local/bin/sops
   fi
+}
+
+resolve_sops_kms() {
+  SOPS_ENCRYPT_ARGS=()
+  SOPS_RULE_KEY=""
+  SOPS_RULE_VALUE=""
+
+  if is_gke_cluster; then
+    # Override with the full resource ID when your KMS key is managed elsewhere.
+    # Example: projects/my-project/locations/global/keyRings/sops/cryptoKeys/ortelius-gke-secrets
+    SOPS_GCP_KMS="$(gcp_kms_for_dir "$CLUSTER")"
+
+    SOPS_ENCRYPT_ARGS=(--gcp-kms "$SOPS_GCP_KMS")
+    SOPS_RULE_KEY="gcp_kms"
+    SOPS_RULE_VALUE="$SOPS_GCP_KMS"
+
+  else
+    local aws_region aws_account kms_alias
+    aws_region="$(tfvar aws_region)"
+    kms_alias="${SOPS_AWS_KMS_ALIAS:-alias/${CLUSTER_NAME}-sops}"
+
+    # Prefer a full KMS ARN. If not set, try to derive an alias ARN from AWS STS.
+    SOPS_AWS_KMS_ARN="${SOPS_AWS_KMS_ARN:-${SOPS_AWS_KMS:-}}"
+    if [[ -z "$SOPS_AWS_KMS_ARN" ]] && command -v aws &>/dev/null; then
+      aws_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+      if [[ -n "$aws_account" && "$aws_account" != "None" ]]; then
+        SOPS_AWS_KMS_ARN="arn:aws:kms:${aws_region}:${aws_account}:${kms_alias}"
+      fi
+    fi
+
+    if [[ -z "$SOPS_AWS_KMS_ARN" ]]; then
+      echo "ERROR: SOPS_AWS_KMS_ARN is required for EKS KMS encryption."
+      echo "       Example: export SOPS_AWS_KMS_ARN=arn:aws:kms:${aws_region}:123456789012:alias/${CLUSTER_NAME}-sops"
+      exit 1
+    fi
+
+    SOPS_ENCRYPT_ARGS=(--kms "$SOPS_AWS_KMS_ARN")
+    SOPS_RULE_KEY="kms"
+    SOPS_RULE_VALUE="$SOPS_AWS_KMS_ARN"
+  fi
+}
+
+write_sops_config() {
+  # Keep SOPS pointed at cloud KMS instead of local age keys.
+  # Write rules for every local gke* directory so gke and gke-2 can coexist.
+  mkdir -p "$(dirname "$SOPS_CONFIG")"
+
+  {
+    echo "creation_rules:"
+
+    local cluster_dir kms_value
+    shopt -s nullglob
+    for cluster_path in "$SCRIPT_DIR"/gke*; do
+      cluster_dir="$(basename "$cluster_path")"
+      [[ -f "$cluster_path/terraform.tfvars" ]] || continue
+      kms_value="$(gcp_kms_for_dir "$cluster_dir")"
+      cat <<SOPS
+  - path_regex: clusters/${cluster_dir}/.*\.yaml$
+    gcp_kms: ${kms_value}
+SOPS
+    done
+    shopt -u nullglob
+
+    if [[ "$CLUSTER" == "eks" ]]; then
+      cat <<SOPS
+  - path_regex: clusters/eks/.*\.yaml$
+    kms: ${SOPS_RULE_VALUE}
+SOPS
+    fi
+  } > "$SOPS_CONFIG"
+
+  echo "✓ Wrote SOPS config: $SOPS_CONFIG"
 }
 
 ensure_flux_cli() {
@@ -52,30 +253,15 @@ ensure_flux_cli() {
 
 ensure_secrets() {
   ensure_tools
+  ensure_gcp_sops_kms
+  resolve_sops_kms
+  write_sops_config
 
-  if [ ! -f "$KEY_FILE" ]; then
-    EKS_KEY=$(ls "$HOME"/.ssh/*eks*.sops.key 2>/dev/null | head -n 1)
-    if [ -n "$EKS_KEY" ]; then
-      echo "Found existing AWS age key ($EKS_KEY). Copying to $KEY_FILE..."
-      cp "$EKS_KEY" "$KEY_FILE"
-    else
-      echo "Generating age key: $KEY_FILE"
-      mkdir -p "$HOME/.ssh" && age-keygen -o "$KEY_FILE" && chmod 600 "$KEY_FILE"
+  if [[ ! -s "$SECRETS_OUT" ]]; then
+    if [[ -f "$SECRETS_OUT" ]]; then
+      echo "⚠  Existing secrets file is empty: $SECRETS_OUT"
+      echo "   Regenerating it now."
     fi
-  fi
-
-  AGE_PUBKEY=$(grep "^# public key:" "$KEY_FILE" | awk '{print $4}')
-
-  # Always write .sops.yaml so it stays in sync with the current key
-  cat > "$SCRIPT_DIR/../clusters/.sops.yaml" <<SOPS
-creation_rules:
-  - path_regex: clusters/eks/.*\\.yaml$
-    age: $AGE_PUBKEY
-  - path_regex: clusters/gke/.*\\.yaml$
-    age: $AGE_PUBKEY
-SOPS
-
-  if [ ! -f "$SECRETS_OUT" ]; then
     echo "--- Interactive Secret Setup for $CLUSTER ---"
 
     read -rp "  smtp.username                : " SMTP_USER
@@ -143,22 +329,41 @@ stringData:
 YAML
     fi
 
-    # 3. Encrypt the combined file
-    sops --encrypt \
+    # 3. Encrypt the combined file safely.
+    # Do not redirect sops directly into $SECRETS_OUT; shell redirection truncates
+    # the destination before sops runs, which can leave a zero-byte secrets file
+    # if encryption fails.
+    mkdir -p "$(dirname "$SECRETS_OUT")"
+    ENC_TMP="$(mktemp --suffix=.enc.yaml)"
+
+    if ! sops --encrypt \
+      --config "$SOPS_CONFIG" \
       --input-type yaml \
       --output-type yaml \
-      --age "$AGE_PUBKEY" \
+      --filename-override "$SECRETS_REL" \
+      "${SOPS_ENCRYPT_ARGS[@]}" \
       --encrypted-regex '^(data|stringData)$' \
-      "$TMP" > "$SECRETS_OUT"
+      "$TMP" > "$ENC_TMP"; then
+      echo "ERROR: sops encryption failed; leaving $SECRETS_OUT unchanged."
+      rm -f "$TMP" "$ENC_TMP"
+      exit 1
+    fi
+
+    if [[ ! -s "$ENC_TMP" ]]; then
+      echo "ERROR: sops produced an empty encrypted file; leaving $SECRETS_OUT unchanged."
+      rm -f "$TMP" "$ENC_TMP"
+      exit 1
+    fi
+
+    mv "$ENC_TMP" "$SECRETS_OUT"
     rm "$TMP"
 
     # Verify the output has plaintext metadata before committing
     echo "Verifying encryption (apiVersion should be plaintext):"
     head -4 "$SECRETS_OUT"
 
-    REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
     cd "$REPO_ROOT"
-    git add clusters/.sops.yaml "$SECRETS_OUT"
+    git add "$SOPS_CONFIG" "$SECRETS_OUT"
     if ! git diff --cached --quiet; then
       git commit -m "chore($CLUSTER): add encrypted secrets and sops config"
       git push --set-upstream origin main
@@ -325,7 +530,7 @@ drain_flux_workloads() {
       ELAPSED=$(( ELAPSED + INTERVAL ))
     done
 
-  elif [[ "$CLUSTER" == "gke" ]]; then
+  elif is_gke_cluster; then
     TOTAL=$(gcloud compute forwarding-rules list \
       --project "$GCP_PROJECT" \
       --filter "description~$CLUSTER_NAME" \
@@ -354,6 +559,8 @@ if [[ "$CLUSTER" == "eks" && ! -f "$WORKDIR/alb-controller-iam-policy.json" ]]; 
     https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
 fi
 
+ensure_gcp_sops_kms
+
 echo "════════ Cluster: $CLUSTER | Action: $ACTION ════════"
 cd "$WORKDIR"
 terraform init -upgrade
@@ -380,14 +587,12 @@ case "$ACTION" in
   destroy)
     drain_flux_workloads
 
-    [[ -f "sops.tf" ]] && sed -i.bak 's/prevent_destroy = true/prevent_destroy = false/' sops.tf || true
 
     echo ""
     echo "════════ Destroying infrastructure ════════"
     terraform destroy -auto-approve
     echo "✓ Destroy completed successfully."
 
-    [[ -f "sops.tf.bak" ]] && mv sops.tf.bak sops.tf || true
     ;;
   *) usage ;;
 esac

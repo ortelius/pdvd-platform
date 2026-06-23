@@ -8,7 +8,7 @@
 # both clusters fighting over the same Flux source path.
 
 project_id   = "eighth-physics-169321"
-region       = "us-central1"
+region       = "us-central1-a"
 cluster_name = "deployhub"
 domain       = "app.deployhub.com"
 

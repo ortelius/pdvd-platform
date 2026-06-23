@@ -22,6 +22,11 @@ terraform {
 # ── Variables ─────────────────────────────────────────────────────────────────
 variable "project_id"   { default = "eighth-physics-169321" }
 variable "region"       { default = "us-central1" }
+variable "node_locations" {
+  description = "GKE node zones. Keep a single zone here when you want exactly one node with node_count = 1."
+  type        = list(string)
+  default     = ["us-central1-a"]
+}
 variable "cluster_name" { default = "ortelius-gke" }
 
 variable "github_org"  { default = "ortelius" }
@@ -115,10 +120,14 @@ resource "google_container_cluster" "primary" {
 }
 
 resource "google_container_node_pool" "default" {
-  name       = "default"
-  location   = var.region
-  cluster    = google_container_cluster.primary.name
-  node_count = 2
+  name           = "default"
+  location       = var.region
+  cluster        = google_container_cluster.primary.name
+  node_locations = var.node_locations
+
+  # For a regional cluster, total nodes = node_count × number of node_locations.
+  # Keep node_count = 1 and node_locations to one zone for exactly one node.
+  node_count = 1
 
   node_config {
     # ARM64 node pool. Note: n1-standard-2 is x86_64, so use an Arm machine type instead.
@@ -136,6 +145,17 @@ resource "google_container_node_pool" "default" {
       arch      = "arm64"
       fips      = "enabled"
       lifecycle = "spot"
+    }
+
+    # Security hardening for the node VMs. This is not a separate FIPS switch,
+    # but it is recommended for hardened GKE node pools.
+    shielded_instance_config {
+      enable_secure_boot          = true
+      enable_integrity_monitoring = true
+    }
+
+    metadata = {
+      disable-legacy-endpoints = "true"
     }
 
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]

@@ -13,22 +13,18 @@
   colliding with anything already running.
 */
 
-# ── KMS keyring + key ──────────────────────────────────────────────────────────
-resource "google_kms_key_ring" "flux" {
-  name     = "${var.cluster_name}-sops"
-  location = var.region
+# ── Existing persistent KMS keyring + key ──────────────────────────────────────
+# deploy.sh bootstraps these if they do not exist. Terraform only reads them so
+# cluster destroy/recreate testing does not schedule KMS key material destruction.
+data "google_kms_key_ring" "flux" {
+  name     = "sops"
+  location = "global"
   project  = var.project_id
 }
 
-resource "google_kms_crypto_key" "sops" {
-  name            = "sops-key"
-  key_ring        = google_kms_key_ring.flux.id
-  purpose         = "ENCRYPT_DECRYPT"
-  rotation_period = "7776000s" # 90 days
-
-  lifecycle {
-    prevent_destroy = true
-  }
+data "google_kms_crypto_key" "sops" {
+  name     = "${var.cluster_name}-secrets"
+  key_ring = data.google_kms_key_ring.flux.id
 }
 
 # ── GCP Service Account for Flux ──────────────────────────────────────────────
@@ -40,7 +36,7 @@ resource "google_service_account" "flux_sops" {
 
 # Decrypt-only — Flux never encrypts, only reads secrets at reconcile time
 resource "google_kms_crypto_key_iam_member" "flux_sops_decrypter" {
-  crypto_key_id = google_kms_crypto_key.sops.id
+  crypto_key_id = data.google_kms_crypto_key.sops.id
   role          = "roles/cloudkms.cryptoKeyDecrypter"
   member        = "serviceAccount:${google_service_account.flux_sops.email}"
 }
@@ -70,7 +66,7 @@ resource "google_service_account_iam_member" "helm_controller_wi" {
 resource "null_resource" "sops_yaml_post_bootstrap" {
   triggers = {
     cluster_name = var.cluster_name
-    kms_key_id   = google_kms_crypto_key.sops.id
+    kms_key_id   = data.google_kms_crypto_key.sops.id
   }
 
   provisioner "local-exec" {
@@ -88,13 +84,13 @@ resource "null_resource" "sops_yaml_post_bootstrap" {
       else
         cat >> "$SOPS_FILE" <<SOPS
   - path_regex: clusters/gke-2/.*\\.yaml$$
-    gcp_kms: ${google_kms_crypto_key.sops.id}
+    gcp_kms: ${data.google_kms_crypto_key.sops.id}
 SOPS
       fi
 
       git add clusters/.sops.yaml
       if ! git diff --cached --quiet; then
-        git commit -m "chore(${var.cluster_name}): add clusters/gke-2 SOPS rule (Cloud KMS: ${google_kms_crypto_key.sops.id})"
+        git commit -m "chore(${var.cluster_name}): add clusters/gke-2 SOPS rule (Cloud KMS: ${data.google_kms_crypto_key.sops.id})"
         git push --set-upstream origin main
         echo "✓ .sops.yaml committed"
       else
@@ -203,7 +199,7 @@ ORTELIUSKUST
 
 output "kms_key_id" {
   description = "Cloud KMS key resource ID — used in .sops.yaml gcp_kms"
-  value       = google_kms_crypto_key.sops.id
+  value       = data.google_kms_crypto_key.sops.id
 }
 
 output "flux_sops_sa" {
