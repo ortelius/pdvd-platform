@@ -266,13 +266,13 @@ ensure_secrets() {
 
     read -rp "  smtp.username                : " SMTP_USER
     read -rp "  arangodb.arangodb_pass  : " DB_PASS
-    read -rp "  prtelius.rbac_repo_token : " RBAC_TOKEN
-    read -rp "  prtelius.clientSecret    : " GH_SECRET
-    read -rp "  prtelius.appId           : " GH_APP_ID
-    read -rp "  prtelius.clientId        : " GH_CLIENT_ID
-    read -rp "  prtelius.baseUrl         : " BASE_URL
+    read -rp "  ortelius.rbac_repo_token : " RBAC_TOKEN
+    read -rp "  ortelius.clientSecret    : " GH_SECRET
+    read -rp "  ortelius.appId           : " GH_APP_ID
+    read -rp "  ortelius.clientId        : " GH_CLIENT_ID
+    read -rp "  ortelius.baseUrl         : " BASE_URL
     read -rp "  smtp.password                : " SMTP_PASS
-    echo "  prtelius.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
+    echo "  ortelius.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
     GH_KEY=$(cat)
 
     TMP=$(mktemp --suffix=.yaml)
@@ -288,7 +288,7 @@ stringData:
   values.yaml: |
     arangodb:
       arangodb_pass: "${DB_PASS}"
-    prtelius:
+    ortelius:
       baseUrl: "${BASE_URL}"
       rbac_repo_token: "${RBAC_TOKEN}"
       github:

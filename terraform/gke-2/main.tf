@@ -153,7 +153,7 @@ resource "google_container_node_pool" "default" {
     # Run nodes as Spot VMs.
     spot = true
 
-    image_type = "COS_CONTAINERD"
+    image_type = "COS_FIPS_CONTAINERDS"
 
     labels = {
       arch      = "amd64"
@@ -194,17 +194,39 @@ resource "github_repository_deploy_key" "flux_gke" {
   read_only  = false
 }
 
+# ── Flux Bootstrap ────────────────────────────────────────────────────────────
+
 resource "flux_bootstrap_git" "gke" {
-  # Flux will install its components into clusters/gke/flux-system/
-  # and watch clusters/gke/ for workload kustomizations
-  path = "clusters/gke"
+  path = "clusters/${var.cluster_name}"
 
   components_extra = ["image-reflector-controller", "image-automation-controller"]
 
-  # Ensure the cluster nodes are up and the deploy key exists before bootstrapping
+  # Override the default kustomization.yaml to inject the GSA email automatically
+  kustomization_override = <<-EOT
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - gotk-components.yaml
+  - gotk-sync.yaml
+patches:
+  - target:
+      kind: ServiceAccount
+      name: kustomize-controller
+      namespace: flux-system
+    patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: kustomize-controller
+        annotations:
+          iam.gke.io/gcp-service-account: ${google_service_account.flux_sops.email}
+  EOT
+
+  # Ensure the cluster nodes are up, deploy key exists, AND Workload Identity is ready
   depends_on = [
     google_container_node_pool.default,
     github_repository_deploy_key.flux_gke,
+    google_service_account_iam_member.flux_sops_workload_identity
   ]
 }
 
@@ -233,4 +255,24 @@ variable "domain" {
   type        = string
   description = "Application domain name. Present in terraform.tfvars; used by deploy.sh/DNS output even if not consumed directly by this module."
   default     = ""
+}
+
+# ── Flux Workload Identity for SOPS ───────────────────────────────────────────
+
+resource "google_service_account" "flux_sops" {
+  account_id   = "${var.cluster_name}-flux-sops"
+  display_name = "Flux SOPS Decrypter for ${var.cluster_name}"
+}
+
+resource "google_kms_crypto_key_iam_member" "flux_sops_decrypter" {
+  crypto_key_id = data.google_kms_crypto_key.sops.id
+  role          = "roles/cloudkms.cryptoKeyDecrypter"
+  member        = "serviceAccount:${google_service_account.flux_sops.email}"
+}
+
+resource "google_service_account_iam_member" "flux_sops_workload_identity" {
+  service_account_id = google_service_account.flux_sops.name
+  role               = "roles/iam.workloadIdentityUser"
+  # Syntax: serviceAccount:PROJECT_ID.svc.id.goog[K8S_NAMESPACE/KSA_NAME]
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[flux-system/kustomize-controller]"
 }
