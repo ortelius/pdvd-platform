@@ -1,23 +1,5 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - gotk-components.yaml
-  - gotk-sync.yaml
-patches:
-  - patch: |
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: kustomize-controller
-        namespace: flux-system
-      spec:
-        template:
-          spec:
-            containers:
-              - name: manager
-                envFrom:
-                  - secretRef:
-                      name: sops-age
-    target:
-      kind: Deployment
-      name: kustomize-controller
+- gotk-components.yaml
+- gotk-sync.yaml
