@@ -251,6 +251,107 @@ ensure_flux_cli() {
   fi
 }
 
+ensure_app_manifests() {
+  # Static + per-cluster GitOps manifests for the ortelius HelmRelease.
+  # Idempotent: only writes files that don't already exist, so hand-edited
+  # manifests in an existing cluster directory are never overwritten.
+  local ORTELIUS_DIR="$REPO_ROOT/clusters/$CLUSTER/ortelius"
+  local KUSTOMIZE_REL="clusters/$CLUSTER/ortelius/kustomization.yaml"
+  local HELMREPO_REL="clusters/$CLUSTER/ortelius/helmrepository.yaml"
+  local HELMRELEASE_REL="clusters/$CLUSTER/ortelius/helmrelease.yaml"
+  local DOMAIN
+  DOMAIN="$(tfvar domain)"
+  [[ -z "$DOMAIN" ]] && { echo "ERROR: domain must be set in $WORKDIR/terraform.tfvars"; exit 1; }
+
+  mkdir -p "$ORTELIUS_DIR"
+  local WROTE_ANY=false
+
+  if [[ ! -f "$REPO_ROOT/$KUSTOMIZE_REL" ]]; then
+    cat > "$REPO_ROOT/$KUSTOMIZE_REL" <<'YAML'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrepository.yaml
+  - helmrelease.yaml
+  - secrets.enc.yaml
+YAML
+    echo "  ✓ Wrote $KUSTOMIZE_REL"
+    WROTE_ANY=true
+  fi
+
+  if [[ ! -f "$REPO_ROOT/$HELMREPO_REL" ]]; then
+    cat > "$REPO_ROOT/$HELMREPO_REL" <<'YAML'
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: helmcharts
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: https://ortelius.github.io/helmcharts
+YAML
+    echo "  ✓ Wrote $HELMREPO_REL"
+    WROTE_ANY=true
+  fi
+
+  if [[ ! -f "$REPO_ROOT/$HELMRELEASE_REL" ]]; then
+    # appId/clientId/clientSecret/baseUrl/etc. live ONLY in the encrypted
+    # secret (valuesFrom below) — not duplicated here as plaintext.
+    cat > "$REPO_ROOT/$HELMRELEASE_REL" <<YAML
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ortelius
+  namespace: flux-system
+spec:
+  interval: 5m
+  targetNamespace: ortelius
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: ortelius
+      version: ">=12.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: helmcharts
+        namespace: flux-system
+      interval: 5m
+  values:
+    frontend:
+      graphqlEndpoint: "https://${DOMAIN}/api/v1/graphql"
+      restapiEndpoint: "https://${DOMAIN}/api/v1"
+      ingress:
+        type: glb
+        host: "${DOMAIN}"
+    ortelius:
+      ingress:
+        type: glb
+        host: "${DOMAIN}"
+      rbac_repo: "https://github.com/ortelius/rbac.git"
+    arangodb: {}
+  valuesFrom:
+    - kind: Secret
+      name: ortelius-secrets
+YAML
+    echo "  ✓ Wrote $HELMRELEASE_REL"
+    WROTE_ANY=true
+  fi
+
+  if [[ "$WROTE_ANY" == true ]]; then
+    cd "$REPO_ROOT"
+    git add "$KUSTOMIZE_REL" "$HELMREPO_REL" "$HELMRELEASE_REL"
+    if ! git diff --cached --quiet; then
+      git commit -m "chore($CLUSTER): add ortelius GitOps manifests (kustomization/helmrepository/helmrelease)"
+      git push
+      echo "✓ App manifests committed and pushed"
+    fi
+    cd "$WORKDIR"
+  else
+    echo "  ✓ App manifests already present for $CLUSTER — skipping"
+  fi
+}
+
 ensure_secrets() {
   ensure_tools
   ensure_gcp_sops_kms
@@ -550,6 +651,7 @@ drain_flux_workloads() {
 }
 
 if [[ "$ACTION" == "apply" ]]; then
+  ensure_app_manifests
   ensure_secrets
 fi
 
