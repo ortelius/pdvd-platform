@@ -24,6 +24,24 @@ variable "project_id"   { default = "eighth-physics-169321" }
 variable "region"       { default = "us-central1" }
 variable "cluster_name" { default = "ortelius-gke" }
 
+variable "gitops_path" {
+  description = <<-EOT
+    Directory under clusters/ in the GitOps repo that Flux watches for this
+    cluster (clusters/<gitops_path>). Defaults to cluster_name, but can be
+    overridden so the Terraform working directory / git path don't have to
+    match the actual GKE cluster name (e.g. cluster_name = "deployhub" while
+    gitops_path = "gke-2"). Changing this on an existing cluster moves where
+    flux_bootstrap_git writes flux-system manifests; it does NOT rename or
+    recreate the underlying google_container_cluster.
+  EOT
+  type        = string
+  default     = null
+}
+
+locals {
+  gitops_path = coalesce(var.gitops_path, var.cluster_name)
+}
+
 variable "github_org"  { default = "ortelius" }
 variable "github_repo" { default = "platform-iac" }
 variable "github_token" {
@@ -112,6 +130,10 @@ resource "google_container_cluster" "primary" {
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
+
+  # Enforce verifiable boot integrity + strong cryptographic node identity
+  # cluster-wide (covers any node pool, including future default pools).
+  enable_shielded_nodes = true
 }
 
 variable "node_locations" {
@@ -153,7 +175,7 @@ resource "google_container_node_pool" "default" {
     # Run nodes as Spot VMs.
     spot = true
 
-    image_type = "COS_FIPS_CONTAINERDS"
+    image_type = "COS_CONTAINERD"
 
     labels = {
       arch      = "amd64"
@@ -197,7 +219,7 @@ resource "github_repository_deploy_key" "flux_gke" {
 # ── Flux Bootstrap ────────────────────────────────────────────────────────────
 
 resource "flux_bootstrap_git" "gke" {
-  path = "clusters/${var.cluster_name}"
+  path = "clusters/${local.gitops_path}"
 
   components_extra = ["image-reflector-controller", "image-automation-controller"]
 
