@@ -14,3 +14,5 @@ domain       = "app.deployhub.com"
 
 github_org  = "ortelius"
 github_repo = "platform-iac"
+
+gitops_path = "gke-2"
