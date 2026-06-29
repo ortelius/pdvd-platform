@@ -263,6 +263,25 @@ ensure_app_manifests() {
   DOMAIN="$(tfvar domain)"
   [[ -z "$DOMAIN" ]] && { echo "ERROR: domain must be set in $WORKDIR/terraform.tfvars"; exit 1; }
 
+  # Non-secret config that lives in plaintext helmrelease.yaml, not the
+  # encrypted secret. Only collected once, when the manifest doesn't exist yet.
+  local GH_APP_NAME GH_APP_ID GH_CLIENT_ID GOOGLE_CLIENT_ID GOOGLE_ALLOWED_DOMAIN
+  local GHSIGNIN_CLIENT_ID SMTP_HOST SMTP_PORT SMTP_USER SMTP_FROM_EMAIL SMTP_FROM_NAME
+  if [[ ! -f "$REPO_ROOT/clusters/$CLUSTER/ortelius/helmrelease.yaml" ]]; then
+    echo "--- Non-secret config for $CLUSTER (committed in plaintext) ---"
+    read -rp "  github.appName               : " GH_APP_NAME
+    read -rp "  github.appId                 : " GH_APP_ID
+    read -rp "  github.clientId              : " GH_CLIENT_ID
+    read -rp "  googleOidc.clientId          : " GOOGLE_CLIENT_ID
+    read -rp "  googleOidc.allowedDomain (blank = any Google account) : " GOOGLE_ALLOWED_DOMAIN
+    read -rp "  githubSignin.clientId        : " GHSIGNIN_CLIENT_ID
+    read -rp "  smtp.host                    : " SMTP_HOST
+    read -rp "  smtp.port                    : " SMTP_PORT
+    read -rp "  smtp.username                : " SMTP_USER
+    read -rp "  smtp.fromEmail               : " SMTP_FROM_EMAIL
+    read -rp "  smtp.fromName                : " SMTP_FROM_NAME
+  fi
+
   mkdir -p "$ORTELIUS_DIR"
   local WROTE_ANY=false
 
@@ -295,8 +314,10 @@ YAML
   fi
 
   if [[ ! -f "$REPO_ROOT/$HELMRELEASE_REL" ]]; then
-    # appId/clientId/clientSecret/baseUrl/etc. live ONLY in the encrypted
-    # secret (valuesFrom below) — not duplicated here as plaintext.
+    # Split: clientSecret/privateKey/tokens/passwords live ONLY in the
+    # encrypted secret (valuesFrom below). Everything else (IDs, hosts,
+    # ports, emails, domains, booleans) is plaintext here for git diff
+    # visibility, matching the chart's expected .Values shape.
     cat > "$REPO_ROOT/$HELMRELEASE_REL" <<YAML
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -329,6 +350,24 @@ spec:
         type: glb
         host: "${DOMAIN}"
       rbac_repo: "https://github.com/ortelius/rbac.git"
+      apiBaseUrl: "https://${DOMAIN}"
+      baseUrl: "https://${DOMAIN}"
+      github:
+        appName: "${GH_APP_NAME}"
+        appId: "${GH_APP_ID}"
+        clientId: "${GH_CLIENT_ID}"
+      googleOidc:
+        clientId: "${GOOGLE_CLIENT_ID}"
+        allowedDomain: "${GOOGLE_ALLOWED_DOMAIN}"
+      githubSignin:
+        clientId: "${GHSIGNIN_CLIENT_ID}"
+      smtp:
+        enabled: true
+        host: "${SMTP_HOST}"
+        port: "${SMTP_PORT}"
+        username: "${SMTP_USER}"
+        fromEmail: "${SMTP_FROM_EMAIL}"
+        fromName: "${SMTP_FROM_NAME}"
     arangodb: {}
   valuesFrom:
     - kind: Secret
@@ -364,16 +403,18 @@ ensure_secrets() {
       echo "   Regenerating it now."
     fi
     echo "--- Interactive Secret Setup for $CLUSTER ---"
+    echo "  (Only password/private-key/token-shaped values go here — IDs, hosts,"
+    echo "   and other non-secret config live in plaintext helmrelease.yaml.)"
 
-    read -rp "  smtp.username                : " SMTP_USER
-    read -rp "  arangodb.arangodb_pass  : " DB_PASS
-    read -rp "  ortelius.rbac_repo_token : " RBAC_TOKEN
-    read -rp "  ortelius.clientSecret    : " GH_SECRET
-    read -rp "  ortelius.appId           : " GH_APP_ID
-    read -rp "  ortelius.clientId        : " GH_CLIENT_ID
-    read -rp "  ortelius.baseUrl         : " BASE_URL
-    read -rp "  smtp.password                : " SMTP_PASS
-    echo "  ortelius.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
+    read -rp "  arangodb.arangodb_pass             : " DB_PASS
+    read -rp "  ortelius.rbac_repo_token           : " RBAC_TOKEN
+    read -rp "  ortelius.tokenEncryptionKey        : " TOKEN_ENC_KEY
+    read -rp "  ortelius.github.clientSecret       : " GH_SECRET
+    read -rp "  ortelius.github.readonly_token     : " GH_READONLY_TOKEN
+    read -rp "  ortelius.googleOidc.clientSecret   : " GOOGLE_SECRET
+    read -rp "  ortelius.githubSignin.clientSecret : " GHSIGNIN_SECRET
+    read -rp "  smtp.password                      : " SMTP_PASS
+    echo "  ortelius.github.privateKey (Paste PEM block, then press Ctrl-D on a new line):"
     GH_KEY=$(cat)
 
     TMP=$(mktemp --suffix=.yaml)
@@ -390,17 +431,19 @@ stringData:
     arangodb:
       arangodb_pass: "${DB_PASS}"
     ortelius:
-      baseUrl: "${BASE_URL}"
       rbac_repo_token: "${RBAC_TOKEN}"
+      tokenEncryptionKey: "${TOKEN_ENC_KEY}"
       github:
-        appId: "${GH_APP_ID}"
-        clientId: "${GH_CLIENT_ID}"
         clientSecret: "${GH_SECRET}"
+        readonly_token: "${GH_READONLY_TOKEN}"
         privateKey: |
 $(echo "$GH_KEY" | sed 's/^/          /')
-    smtp:
-      username: "${SMTP_USER}"
-      password: "${SMTP_PASS}"
+      googleOidc:
+        clientSecret: "${GOOGLE_SECRET}"
+      githubSignin:
+        clientSecret: "${GHSIGNIN_SECRET}"
+      smtp:
+        password: "${SMTP_PASS}"
 YAML
 
     # 2. Conditionally append Cloudflare token for ExternalDNS

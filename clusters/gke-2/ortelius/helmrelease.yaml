@@ -41,6 +41,7 @@ spec:
         port: "587"
         fromEmail: "steve@deployhub.com"
         fromName: "Steve Taylor"
+        username: "steve@deployhub.com"
     arangodb: {}
   valuesFrom:
     - kind: Secret
