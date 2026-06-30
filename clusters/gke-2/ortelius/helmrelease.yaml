@@ -34,7 +34,12 @@ spec:
       github:
         appName: "deployhub"
         appId: "2727141"
-        clientId: "Iv23liKdUQ34YPWnFfvu"
+        clientId: "Iv23liVE3QJYlS6BGQRa"
+      googleOidc:
+        clientId: "1095520274207-amhnedlv47f2jlqj0v3itg1a324flfmb.apps.googleusercontent.com"
+        allowedDomain: ""         # blank = any Google account; set to restrict to a Workspace domain
+      githubSignin:
+        clientId: "Ov23liNEc9dA3puK7HvY"
       smtp:
         enabled: true
         host: "smtp.gmail.com"
