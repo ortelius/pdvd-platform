@@ -13,7 +13,7 @@ spec:
   chart:
     spec:
       chart: ortelius
-      version: "12.0.323"
+      version: ">=12.0.323"
       sourceRef:
         kind: HelmRepository
         name: helmcharts
