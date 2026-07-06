@@ -27,7 +27,7 @@ spec:
       github:
         appName: "deployhub"
         appId: "2727141"
-        clientId: "Iv23liVE3QJYlS6BGQRa"
+        clientId: "Iv23liKdUQ34YPWnFfvu"
 
     frontend:
       graphqlEndpoint: "https://app.deployhub.com/api/v1/graphql"
