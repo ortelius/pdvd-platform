@@ -1,0 +1,32 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: pdvd
+  namespace: flux-system
+spec:
+  # Wait for ALB controller to be ready before installing pdvd.
+  # The ALB controller webhook must be available before any Service or Ingress
+  # objects are created, otherwise the install fails with webhook errors.
+  # external-dns is not listed here — it uses the Cloudflare API directly
+  # and does not block pdvd from installing successfully.
+  dependsOn:
+    - name: aws-load-balancer-controller
+      namespace: flux-system
+  interval: 5m
+  targetNamespace: pdvd
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: pdvd
+      version: ">=12.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: pdvd-charts
+        namespace: flux-system
+      interval: 5m
+  valuesFrom:
+    - kind: ConfigMap
+      name: pdvd-values
+    - kind: Secret
+      name: pdvd-secrets
