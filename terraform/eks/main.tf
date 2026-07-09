@@ -397,6 +397,51 @@ module "external_dns_irsa_role" {
   }
 }
 
+# ── IAM: Flux SOPS decryption via existing KMS key (IRSA) ─────────────────────
+# deploy.sh bootstraps this KMS key (alias/<cluster_name>-sops) before Terraform
+# runs — same convention as GKE's Cloud KMS key. Terraform only reads it.
+data "aws_kms_alias" "sops" {
+  name = "alias/${var.cluster_name}-sops"
+}
+
+data "aws_iam_policy_document" "flux_sops_kms" {
+  statement {
+    actions   = ["kms:Decrypt", "kms:DescribeKey"]
+    resources = [data.aws_kms_alias.sops.target_key_arn]
+  }
+}
+
+resource "aws_iam_policy" "flux_sops_kms" {
+  name   = "${var.cluster_name}-flux-sops-kms"
+  policy = data.aws_iam_policy_document.flux_sops_kms.json
+}
+
+# kustomize-controller decrypts flux-system/ortelius Kustomizations; helm-controller
+# decrypts values referenced by HelmRelease valuesFrom. Both assume this role via
+# IRSA (the AWS equivalent of GKE's Workload Identity) — no key material stored
+# in the cluster, nothing to back up or rotate by hand.
+module "flux_sops_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name = "${var.cluster_name}-flux-sops"
+
+  oidc_providers = {
+    main = {
+      provider_arn = module.eks.oidc_provider_arn
+      namespace_service_accounts = [
+        "flux-system:kustomize-controller",
+        "flux-system:helm-controller",
+      ]
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "flux_sops_kms" {
+  role       = module.flux_sops_irsa_role.iam_role_name
+  policy_arn = aws_iam_policy.flux_sops_kms.arn
+}
+
 # ── ACM Certificate & Validation ──────────────────────────────────────────────
 resource "aws_acm_certificate" "app" {
   domain_name       = var.domain
@@ -727,7 +772,8 @@ resource "null_resource" "flux_bootstrap" {
     local_file.bootstrap_script,
     local_file.ortelius_values,
     local_file.external_dns_helmrelease,
-    module.ebs_csi_irsa_role
+    module.ebs_csi_irsa_role,
+    aws_iam_role_policy_attachment.flux_sops_kms
   ]
 }
 
