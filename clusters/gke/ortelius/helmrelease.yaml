@@ -2,23 +2,66 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: ortelius
-  namespace: flux-system   
+  namespace: flux-system
 spec:
   interval: 5m
-  targetNamespace: ortelius     
+  targetNamespace: ortelius
+
   install:
     createNamespace: true
+
   chart:
     spec:
       chart: ortelius
-      version: ">=12.0.0"
+      version: ">=12.0.323"
       sourceRef:
         kind: HelmRepository
         name: helmcharts
         namespace: flux-system
       interval: 5m
+
+  values:
+    global:
+      apiBaseUrl: "https://app.deployhub.com"
+      baseUrl: "https://app.deployhub.com"
+      github:
+        appName: "deployhub"
+        appId: "2727141"
+        clientId: "Iv23liKdUQ34YPWnFfvu"
+
+    frontend:
+      graphqlEndpoint: "https://app.deployhub.com/api/v1/graphql"
+      restapiEndpoint: "https://app.deployhub.com/api/v1"
+      ingress:
+        type: glb
+        host: "app.deployhub.com"
+
+    ortelius:
+      ingress:
+        type: glb
+        host: "app.deployhub.com"
+
+      rbac_repo: "https://github.com/ortelius/rbac.git"
+
+      googleOidc:
+        clientId: "1095520274207-amhnedlv47f2jlqj0v3itg1a324flfmb.apps.googleusercontent.com"
+        allowedDomain: ""
+
+      githubSignin:
+        clientId: "Ov23liNEc9dA3puK7HvY"
+
+      smtp:
+        enabled: true
+        host: "smtp.gmail.com"
+        port: "587"
+        fromEmail: "steve@deployhub.com"
+        fromName: "Steve Taylor"
+        username: "steve@deployhub.com"
+
+    relscanner-job: {}
+
+    arangodb: {}
+
   valuesFrom:
-      - kind: ConfigMap
-        name: values
-      - kind: Secret
-        name: ortelius-secrets
+    - kind: Secret
+      name: ortelius-secrets

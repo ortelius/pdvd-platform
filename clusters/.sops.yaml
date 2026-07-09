@@ -1,5 +1,4 @@
 creation_rules:
   - path_regex: clusters/gke/.*\.yaml$
     gcp_kms: projects/eighth-physics-169321/locations/global/keyRings/sops/cryptoKeys/deployhub-secrets
-  - path_regex: clusters/gke-2/.*\.yaml$
-    gcp_kms: projects/eighth-physics-169321/locations/global/keyRings/sops/cryptoKeys/deployhub-secrets
+

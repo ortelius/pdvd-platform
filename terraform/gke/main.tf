@@ -22,12 +22,25 @@ terraform {
 # ── Variables ─────────────────────────────────────────────────────────────────
 variable "project_id"   { default = "eighth-physics-169321" }
 variable "region"       { default = "us-central1" }
-variable "node_locations" {
-  description = "GKE node zones. Keep a single zone here when you want exactly one node with node_count = 1."
-  type        = list(string)
-  default     = ["us-central1-a"]
-}
 variable "cluster_name" { default = "ortelius-gke" }
+
+variable "gitops_path" {
+  description = <<-EOT
+    Directory under clusters/ in the GitOps repo that Flux watches for this
+    cluster (clusters/<gitops_path>). Defaults to cluster_name, but can be
+    overridden so the Terraform working directory / git path don't have to
+    match the actual GKE cluster name (e.g. cluster_name = "deployhub" while
+    gitops_path = "gke-2"). Changing this on an existing cluster moves where
+    flux_bootstrap_git writes flux-system manifests; it does NOT rename or
+    recreate the underlying google_container_cluster.
+  EOT
+  type        = string
+  default     = null
+}
+
+locals {
+  gitops_path = coalesce(var.gitops_path, var.cluster_name)
+}
 
 variable "github_org"  { default = "ortelius" }
 variable "github_repo" { default = "platform-iac" }
@@ -117,6 +130,28 @@ resource "google_container_cluster" "primary" {
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
+
+  # Enforce verifiable boot integrity + strong cryptographic node identity
+  # cluster-wide (covers any node pool, including future default pools).
+  enable_shielded_nodes = true
+}
+
+variable "node_locations" {
+  description = "GKE node zones. Keep a single zone here when you want exactly one node at startup/minimum."
+  type        = list(string)
+  default     = ["us-central1-a"]
+}
+
+variable "node_min_count" {
+  description = "Minimum number of nodes for the default GKE node pool autoscaler."
+  type        = number
+  default     = 1
+}
+
+variable "node_max_count" {
+  description = "Maximum number of nodes for the default GKE node pool autoscaler."
+  type        = number
+  default     = 3
 }
 
 resource "google_container_node_pool" "default" {
@@ -125,30 +160,29 @@ resource "google_container_node_pool" "default" {
   cluster        = google_container_cluster.primary.name
   node_locations = var.node_locations
 
-  # For a regional cluster, total nodes = node_count × number of node_locations.
-  # Keep node_count = 1 and node_locations to one zone for exactly one node.
-  node_count = 1
+  # Start with one node. With autoscaling enabled, GKE can scale from
+  # node_min_count to node_max_count as workload demand changes.
+  initial_node_count = 1
+
+  autoscaling {
+    min_node_count = var.node_min_count
+    max_node_count = var.node_max_count
+  }
 
   node_config {
-    # ARM64 node pool. Note: n1-standard-2 is x86_64, so use an Arm machine type instead.
-    machine_type = "t2a-standard-2"
+    machine_type = "n1-standard-2"
 
     # Run nodes as Spot VMs.
     spot = true
 
-    # Container-Optimized OS with containerd.
-    # GKE doesn't expose a simple Terraform "enable_fips" switch for node pools;
-    # this label records the intended compliance posture for workload scheduling/ops.
     image_type = "COS_CONTAINERD"
 
     labels = {
-      arch      = "arm64"
+      arch      = "amd64"
       fips      = "enabled"
       lifecycle = "spot"
     }
 
-    # Security hardening for the node VMs. This is not a separate FIPS switch,
-    # but it is recommended for hardened GKE node pools.
     shielded_instance_config {
       enable_secure_boot          = true
       enable_integrity_monitoring = true
@@ -159,6 +193,7 @@ resource "google_container_node_pool" "default" {
     }
 
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+
     workload_metadata_config {
       mode = "GKE_METADATA"
     }
@@ -181,22 +216,85 @@ resource "github_repository_deploy_key" "flux_gke" {
   read_only  = false
 }
 
+# ── Flux Bootstrap ────────────────────────────────────────────────────────────
+
 resource "flux_bootstrap_git" "gke" {
-  # Flux will install its components into clusters/gke/flux-system/
-  # and watch clusters/gke/ for workload kustomizations
-  path = "clusters/gke"
+  path = "clusters/${local.gitops_path}"
 
   components_extra = ["image-reflector-controller", "image-automation-controller"]
 
-  # Ensure the cluster nodes are up and the deploy key exists before bootstrapping
+  # Override the default kustomization.yaml to inject the GSA email automatically
+  kustomization_override = <<-EOT
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - gotk-components.yaml
+  - gotk-sync.yaml
+patches:
+  - target:
+      kind: ServiceAccount
+      name: kustomize-controller
+      namespace: flux-system
+    patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: kustomize-controller
+        annotations:
+          iam.gke.io/gcp-service-account: ${google_service_account.flux_sops.email}
+  EOT
+
+  # Ensure the cluster nodes are up, deploy key exists, AND Workload Identity is ready
   depends_on = [
     google_container_node_pool.default,
     github_repository_deploy_key.flux_gke,
-    null_resource.sops_age_secret_pre_bootstrap # ENFORCES SECRET INJECTION BEFORE BOOTSTRAP
+    google_service_account_iam_member.flux_sops_workload_identity
   ]
+}
+
+data "google_kms_key_ring" "sops" {
+  name     = "sops"
+  location = "global"
+}
+
+data "google_kms_crypto_key" "sops" {
+  name     = "${var.cluster_name}-secrets"
+  key_ring = data.google_kms_key_ring.sops.id
+}
+
+resource "google_kms_crypto_key_iam_member" "sops_user" {
+  crypto_key_id = data.google_kms_crypto_key.sops.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "user:steve@deployhub.com"
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
 output "cluster_name"     { value = google_container_cluster.primary.name }
 output "cluster_endpoint" { value = google_container_cluster.primary.endpoint }
 output "static_ip"        { value = google_compute_global_address.app.address }
+
+variable "domain" {
+  type        = string
+  description = "Application domain name. Present in terraform.tfvars; used by deploy.sh/DNS output even if not consumed directly by this module."
+  default     = ""
+}
+
+# ── Flux Workload Identity for SOPS ───────────────────────────────────────────
+
+resource "google_service_account" "flux_sops" {
+  account_id   = "${var.cluster_name}-flux-sops"
+  display_name = "Flux SOPS Decrypter for ${var.cluster_name}"
+}
+
+resource "google_kms_crypto_key_iam_member" "flux_sops_decrypter" {
+  crypto_key_id = data.google_kms_crypto_key.sops.id
+  role          = "roles/cloudkms.cryptoKeyDecrypter"
+  member        = "serviceAccount:${google_service_account.flux_sops.email}"
+}
+
+resource "google_service_account_iam_member" "flux_sops_workload_identity" {
+  service_account_id = google_service_account.flux_sops.name
+  role               = "roles/iam.workloadIdentityUser"
+  # Syntax: serviceAccount:PROJECT_ID.svc.id.goog[K8S_NAMESPACE/KSA_NAME]
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[flux-system/kustomize-controller]"
+}
