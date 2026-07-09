@@ -5,7 +5,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m
-  path: ./clusters/gke-2/ortelius
+  path: ./clusters/gke/ortelius
   prune: true
   sourceRef:
     kind: GitRepository

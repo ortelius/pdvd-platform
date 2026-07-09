@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
 
 usage() {
-  echo "Usage: $0 <gke|gke-2|eks> [plan|apply|destroy]"
+  echo "Usage: $0 <gke|eks> [plan|apply|destroy]"
   echo "       Any cluster directory named gke* is treated as a GKE cluster."
   exit 1
 }
@@ -210,7 +210,7 @@ resolve_sops_kms() {
 
 write_sops_config() {
   # Keep SOPS pointed at cloud KMS instead of local age keys.
-  # Write rules for every local gke* directory so gke and gke-2 can coexist.
+  # Write a rule for every local gke* directory.
   mkdir -p "$(dirname "$SOPS_CONFIG")"
 
   {

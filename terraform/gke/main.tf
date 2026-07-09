@@ -30,7 +30,7 @@ variable "gitops_path" {
     cluster (clusters/<gitops_path>). Defaults to cluster_name, but can be
     overridden so the Terraform working directory / git path don't have to
     match the actual GKE cluster name (e.g. cluster_name = "deployhub" while
-    gitops_path = "gke-2"). Changing this on an existing cluster moves where
+    gitops_path = "gke"). Changing this on an existing cluster moves where
     flux_bootstrap_git writes flux-system manifests; it does NOT rename or
     recreate the underlying google_container_cluster.
   EOT
