@@ -1,102 +1,73 @@
 /*
-  sops.tf — EKS SOPS decryption via age key
+  sops.tf — EKS SOPS decryption via AWS KMS + IRSA
+             (mirrors terraform/gke/sops.tf's Cloud KMS + Workload Identity pattern)
 
-  The sops-age secret MUST exist in flux-system before Flux bootstrap runs,
-  otherwise kustomize-controller fails with CreateContainerConfigError.
-  This file creates it before bootstrap and re-applies it after.
+  No key material is generated or stored anywhere — kustomize-controller and
+  helm-controller authenticate to KMS using their Kubernetes ServiceAccount's
+  IAM Roles for Service Accounts (IRSA) binding to a dedicated IAM role
+  (module.flux_sops_irsa_role / aws_iam_policy.flux_sops_kms, declared in
+  main.tf). SOPS picks up these ambient credentials automatically via the AWS
+  SDK's default credential chain; nothing is mounted into the pod and there is
+  no age key to generate, distribute, or back up by hand.
 */
 
-# Step 1: Create sops-age secret BEFORE Flux bootstrap
-resource "null_resource" "sops_age_secret_pre_bootstrap" {
+# ── Add a clusters/eks rule to .sops.yaml (does not touch gke rules) ──────────
+resource "null_resource" "sops_yaml_post_bootstrap" {
   triggers = {
     cluster_name = var.cluster_name
+    kms_key_arn  = data.aws_kms_alias.sops.target_key_arn
   }
 
   provisioner "local-exec" {
     command = <<-CMD
-      KEY_FILE="$HOME/.ssh/${var.cluster_name}.sops.key"
+      REPO_ROOT=$(git -C "${path.module}" rev-parse --show-toplevel)
+      SOPS_FILE="$REPO_ROOT/clusters/.sops.yaml"
 
-      if [ ! -f "$KEY_FILE" ]; then
-        echo "Error: $KEY_FILE not found. Run deploy.sh to generate it."
-        exit 1
+      cd "$REPO_ROOT"
+      git stash || true
+      git pull --rebase origin main
+      git stash pop || true
+
+      if [ -f "$SOPS_FILE" ] && grep -q "path_regex: clusters/eks" "$SOPS_FILE"; then
+        echo ".sops.yaml already has a clusters/eks rule — leaving as-is"
+      else
+        cat >> "$SOPS_FILE" <<SOPS
+  - path_regex: clusters/eks/.*\\.yaml$$
+    kms: ${data.aws_kms_alias.sops.target_key_arn}
+SOPS
       fi
 
-      aws eks update-kubeconfig \
-        --name ${var.cluster_name} \
-        --region ${var.aws_region}
-
-      # Create flux-system namespace if it doesn't exist yet
-      kubectl create namespace flux-system --dry-run=client -o yaml | kubectl apply -f -
-
-      kubectl create secret generic sops-age \
-        --namespace=flux-system \
-        --from-literal=SOPS_AGE_KEY="$(cat $KEY_FILE)" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      echo "✓ sops-age secret created in flux-system before bootstrap"
+      git add clusters/.sops.yaml
+      if ! git diff --cached --quiet; then
+        git commit -m "chore(${var.cluster_name}): add clusters/eks SOPS rule (KMS: ${data.aws_kms_alias.sops.target_key_arn})"
+        git push --set-upstream origin main
+        echo "✓ .sops.yaml committed"
+      else
+        echo ".sops.yaml unchanged"
+      fi
     CMD
 
     environment = {
-      AWS_DEFAULT_REGION = var.aws_region
-    }
-  }
-
-  depends_on = [module.eks]
-}
-
-# Step 2: Re-apply sops-age secret after bootstrap (in case bootstrap recreated the namespace)
-resource "null_resource" "sops_age_secret_post_bootstrap" {
-  triggers = {
-    flux_sync = null_resource.flux_bootstrap.id
-  }
-
-  provisioner "local-exec" {
-    command = <<-CMD
-      KEY_FILE="$HOME/.ssh/${var.cluster_name}.sops.key"
-
-      if [ ! -f "$KEY_FILE" ]; then
-        echo "Error: $KEY_FILE not found. Run deploy.sh to generate it."
-        exit 1
-      fi
-
-      aws eks update-kubeconfig \
-        --name ${var.cluster_name} \
-        --region ${var.aws_region}
-
-      kubectl create secret generic sops-age \
-        --namespace=flux-system \
-        --from-literal=SOPS_AGE_KEY="$(cat $KEY_FILE)" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      echo "✓ sops-age secret re-applied in flux-system after bootstrap"
-    CMD
-
-    environment = {
-      AWS_DEFAULT_REGION = var.aws_region
+      GITHUB_TOKEN = var.github_token
     }
   }
 
   depends_on = [null_resource.flux_bootstrap]
 }
 
-# Step 3: Write kustomization.yaml and commit
-#
-# flux-system kustomization: patches kustomize-controller with sops-age secret
-#   and enables SOPS decryption on the flux-system Kustomization.
-#
-# ortelius kustomization: separate Kustomization for the ortelius path with dependsOn
-#   flux-system so the ALB controller and external-dns are ready before ortelius
-#   HelmReleases are reconciled. Prevents silent failures when ortelius deploys
-#   before its infrastructure dependencies are ready.
+# ── Patch kustomize-controller / helm-controller SAs + author Kustomizations ──
 resource "null_resource" "flux_sops_patch" {
   triggers = {
     cluster_name = var.cluster_name
+    role_arn     = module.flux_sops_irsa_role.iam_role_arn
   }
 
   provisioner "local-exec" {
     command = <<-CMD
       REPO_ROOT=$(git -C "${path.module}" rev-parse --show-toplevel)
-      KUST_FILE="$REPO_ROOT/clusters/eks/flux-system/kustomization.yaml"
+      FLUX_DIR="$REPO_ROOT/clusters/eks/flux-system"
+      KUST_FILE="$FLUX_DIR/kustomization.yaml"
+      ORTELIUS_KUST_FILE="$FLUX_DIR/ortelius-kustomization.yaml"
 
       cat > "$KUST_FILE" <<KUST
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -104,28 +75,34 @@ kind: Kustomization
 resources:
   - gotk-components.yaml
   - gotk-sync.yaml
+  - ortelius-kustomization.yaml
   - aws-lbc-helmrepository.yaml
   - aws-lbc-helmrelease.yaml
   - external-dns-helmrepository.yaml
   - external-dns-helmrelease.yaml
 patches:
-  - patch: |
-      apiVersion: apps/v1
-      kind: Deployment
+  - target:
+      kind: ServiceAccount
+      name: kustomize-controller
+      namespace: flux-system
+    patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
       metadata:
         name: kustomize-controller
-        namespace: flux-system
-      spec:
-        template:
-          spec:
-            containers:
-              - name: manager
-                envFrom:
-                  - secretRef:
-                      name: sops-age
-    target:
-      kind: Deployment
-      name: kustomize-controller
+        annotations:
+          eks.amazonaws.com/role-arn: ${module.flux_sops_irsa_role.iam_role_arn}
+  - target:
+      kind: ServiceAccount
+      name: helm-controller
+      namespace: flux-system
+    patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: helm-controller
+        annotations:
+          eks.amazonaws.com/role-arn: ${module.flux_sops_irsa_role.iam_role_arn}
   - patch: |
       apiVersion: kustomize.toolkit.fluxcd.io/v1
       kind: Kustomization
@@ -140,9 +117,8 @@ patches:
       name: flux-system
 KUST
 
-      # Write the ortelius Kustomization as a separate file so it can declare
-      # dependsOn without touching the flux-system Kustomization object.
-      ORTELIUS_KUST_FILE="$REPO_ROOT/clusters/eks/flux-system/kustomization.yaml"
+      # Child Kustomization for the ortelius workload, decrypting via IRSA
+      # (no secretRef — age is no longer used by this cluster).
       cat > "$ORTELIUS_KUST_FILE" <<ORTELIUSKUST
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -162,51 +138,20 @@ spec:
     - name: flux-system
 ORTELIUSKUST
 
-      # Add kustomization.yaml to the flux-system kustomization resources
-      # so Flux picks it up. Use awk to insert after gotk-sync.yaml line.
-      if ! grep -q "kustomization.yaml" "$KUST_FILE"; then
-        sed -i 's/  - gotk-sync.yaml/  - gotk-sync.yaml\n  - kustomization.yaml/' "$KUST_FILE"
-      fi
-
       cd "$REPO_ROOT"
       git stash || true
       git pull --rebase origin main
       git stash pop || true
 
-      # Remove the old duplicate helmrelease.yaml if it exists
-      if [ -f "$REPO_ROOT/clusters/eks/ortelius/helmrelease.yaml" ]; then
-        git rm --force "$REPO_ROOT/clusters/eks/ortelius/helmrelease.yaml" 2>/dev/null || \
-          rm -f "$REPO_ROOT/clusters/eks/ortelius/helmrelease.yaml"
-        echo "✓ Removed duplicate clusters/eks/ortelius/helmrelease.yaml"
-      fi
-
-      git add clusters/eks/flux-system/kustomization.yaml
-      git add clusters/eks/flux-system/kustomization.yaml
+      git add "clusters/eks/flux-system/kustomization.yaml" "clusters/eks/flux-system/ortelius-kustomization.yaml"
       git add clusters/.sops.yaml || true
-
       if ! git diff --cached --quiet; then
-        git commit -m "chore(eks): patch kustomize-controller, add ortelius Kustomization with dependsOn"
+        git commit -m "chore(${var.cluster_name}): annotate Flux controller SAs for IRSA KMS access, refresh ortelius Kustomization"
         git push --set-upstream origin main
-        echo "✓ kustomization.yaml and kustomization.yaml committed"
+        echo "✓ committed"
       else
-        echo "kustomization files unchanged"
+        echo "no changes to commit"
       fi
-
-      # ── Age key backup warning ────────────────────────────────────────────
-      KEY_FILE="$HOME/.ssh/${var.cluster_name}.sops.key"
-      echo ""
-      echo "╔══════════════════════════════════════════════════════════════════╗"
-      echo "║  ⚠  IMPORTANT: Back up your age private key                     ║"
-      echo "╠══════════════════════════════════════════════════════════════════╣"
-      echo "║  Location : $KEY_FILE"
-      echo "║                                                                  ║"
-      echo "║  This is the ONLY copy of the key that decrypts all secrets     ║"
-      echo "║  in the repository. If this file is lost, secrets in the repo   ║"
-      echo "║  are permanently unreadable and must be re-encrypted.           ║"
-      echo "║                                                                  ║"
-      echo "║  Suggested: copy to a password manager or secure vault now.     ║"
-      echo "╚══════════════════════════════════════════════════════════════════╝"
-      echo ""
     CMD
 
     environment = {
@@ -214,10 +159,19 @@ ORTELIUSKUST
     }
   }
 
-  depends_on = [null_resource.sops_age_secret_post_bootstrap]
+  depends_on = [
+    null_resource.flux_bootstrap,
+    aws_iam_role_policy_attachment.flux_sops_kms,
+    null_resource.sops_yaml_post_bootstrap,
+  ]
 }
 
-output "age_key_file" {
-  description = "Path to the age private key — back this up securely"
-  value       = pathexpand("~/.ssh/${var.cluster_name}.sops.key")
+output "kms_key_arn" {
+  description = "AWS KMS key ARN — used in .sops.yaml kms rule"
+  value       = data.aws_kms_alias.sops.target_key_arn
+}
+
+output "flux_sops_role_arn" {
+  description = "IAM role ARN — annotated on Flux controller KSAs for IRSA KMS access"
+  value       = module.flux_sops_irsa_role.iam_role_arn
 }
