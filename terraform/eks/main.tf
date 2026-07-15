@@ -602,6 +602,66 @@ resource "null_resource" "git_pull" {
   }
 }
 
+# ── Keep helmrelease.yaml's ALB fields current across cert rotations ──────────
+# helmrelease.yaml is the only file the HelmRelease actually reads (see
+# clusters/eks/ortelius/ — no values.yaml/ConfigMap layer anymore). Rather
+# than regenerating the whole file (which would blow away SMTP/GitHub-app/
+# OIDC config and every comment), this patches just the four ALB fields
+# in place with yq, which edits the YAML AST and leaves everything else —
+# including comments — untouched. Re-triggers only when the cert ARN or
+# subnets actually change, so a routine `deploy.sh eks apply` after a
+# cert rotation is enough to bring helmrelease.yaml back in sync and let
+# Flux pick up the change on its next reconcile.
+resource "null_resource" "helmrelease_alb_patch" {
+  triggers = {
+    certificate_arn = aws_acm_certificate_validation.app.certificate_arn
+    subnets         = join(",", module.vpc.public_subnets)
+  }
+
+  provisioner "local-exec" {
+    command = <<-CMD
+      set -eu
+      REPO_ROOT=$(git -C "${path.module}" rev-parse --show-toplevel)
+      FILE="$REPO_ROOT/clusters/eks/ortelius/helmrelease.yaml"
+
+      if ! command -v yq >/dev/null 2>&1; then
+        echo "Installing yq..."
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+        curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_$${OS}_$${ARCH}" -o /tmp/yq
+        chmod +x /tmp/yq && sudo mv /tmp/yq /usr/local/bin/yq
+      fi
+
+      export CERT_ARN="$CERT_ARN"
+      export SUBNETS_CSV="$SUBNETS_CSV"
+
+      yq -i '
+        .spec.values.frontend.ingress.certificateArn = env(CERT_ARN) |
+        .spec.values.frontend.ingress.subnets         = (env(SUBNETS_CSV) | split(",")) |
+        .spec.values.ortelius.ingress.certificateArn  = env(CERT_ARN) |
+        .spec.values.ortelius.ingress.subnets         = (env(SUBNETS_CSV) | split(","))
+      ' "$FILE"
+
+      cd "$REPO_ROOT"
+      git add clusters/eks/ortelius/helmrelease.yaml
+      if ! git diff --cached --quiet; then
+        git commit -m "chore(eks): sync ALB certificateArn/subnets in helmrelease.yaml"
+        git push --set-upstream origin main
+        echo "✓ helmrelease.yaml ALB fields updated and pushed"
+      else
+        echo "helmrelease.yaml ALB fields already current — no changes"
+      fi
+    CMD
+    environment = {
+      GITHUB_TOKEN = var.github_token
+      CERT_ARN     = aws_acm_certificate_validation.app.certificate_arn
+      SUBNETS_CSV  = join(",", module.vpc.public_subnets)
+    }
+  }
+
+  depends_on = [aws_acm_certificate_validation.app, null_resource.git_pull]
+}
+
 locals {
   bootstrap_script = <<-SCRIPT
     #!/usr/bin/env bash
@@ -727,7 +787,8 @@ resource "null_resource" "flux_bootstrap" {
     local_file.bootstrap_script,
     local_file.external_dns_helmrelease,
     module.ebs_csi_irsa_role,
-    aws_iam_role_policy_attachment.flux_sops_kms
+    aws_iam_role_policy_attachment.flux_sops_kms,
+    null_resource.helmrelease_alb_patch
   ]
 }
 
