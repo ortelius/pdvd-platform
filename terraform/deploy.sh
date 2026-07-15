@@ -17,6 +17,10 @@ is_gke_cluster() {
   [[ "$CLUSTER" == gke* ]]
 }
 
+is_eks_cluster() {
+  [[ "$CLUSTER" == "eks" ]]
+}
+
 [[ -z "$CLUSTER" ]] && usage
 [[ "$CLUSTER" != "eks" ]] && ! is_gke_cluster && usage
 [[ -z "${TF_VAR_github_token:-}" ]] && { echo "ERROR: TF_VAR_github_token is not set"; exit 1; }
@@ -240,6 +244,11 @@ SOPS
   echo "✓ Wrote SOPS config: $SOPS_CONFIG"
 }
 
+eks_acm_cert_arn() {
+  # Only valid to call after `terraform apply` has provisioned the cert.
+  (cd "$WORKDIR" && terraform output -raw acm_certificate_arn 2>/dev/null) || true
+}
+
 ensure_flux_cli() {
   if ! command -v flux &>/dev/null; then
     echo "Installing flux CLI..."
@@ -262,6 +271,20 @@ ensure_app_manifests() {
   local DOMAIN
   DOMAIN="$(tfvar domain)"
   [[ -z "$DOMAIN" ]] && { echo "ERROR: domain must be set in $WORKDIR/terraform.tfvars"; exit 1; }
+
+  # EKS uses an ALB with an ACM cert; GKE uses a GLB with a Google-managed cert.
+  local INGRESS_TYPE CERT_ARN
+  if is_eks_cluster; then
+    INGRESS_TYPE="alb"
+    CERT_ARN="$(eks_acm_cert_arn)"
+    if [[ -z "$CERT_ARN" ]]; then
+      echo "ERROR: Could not read 'acm_certificate_arn' from terraform output."
+      echo "       ensure_app_manifests must run *after* 'terraform apply' has provisioned the ACM certificate."
+      exit 1
+    fi
+  else
+    INGRESS_TYPE="glb"
+  fi
 
   # Non-secret config that lives in plaintext helmrelease.yaml, not the
   # encrypted secret. Only collected once, when the manifest doesn't exist yet.
@@ -318,7 +341,74 @@ YAML
     # encrypted secret (valuesFrom below). Everything else (IDs, hosts,
     # ports, emails, domains, booleans) is plaintext here for git diff
     # visibility, matching the chart's expected .Values shape.
-    cat > "$REPO_ROOT/$HELMRELEASE_REL" <<YAML
+    if is_eks_cluster; then
+      # EKS/ALB: certificateArn is required by the chart's ALB ingress
+      # template, and ALB provisioning depends on the load balancer
+      # controller being ready first.
+      cat > "$REPO_ROOT/$HELMRELEASE_REL" <<YAML
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ortelius
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: aws-load-balancer-controller
+      namespace: flux-system
+  interval: 5m
+  targetNamespace: ortelius
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: ortelius
+      version: ">=12.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: helmcharts
+        namespace: flux-system
+      interval: 5m
+  values:
+    global:
+      apiBaseUrl: "https://${DOMAIN}"
+      baseUrl: "https://${DOMAIN}"
+      github:
+        appName: "${GH_APP_NAME}"
+        appId: "${GH_APP_ID}"
+        clientId: "${GH_CLIENT_ID}"
+    frontend:
+      graphqlEndpoint: "https://${DOMAIN}/api/v1/graphql"
+      restapiEndpoint: "https://${DOMAIN}/api/v1"
+      ingress:
+        type: ${INGRESS_TYPE}
+        host: "${DOMAIN}"
+        certificateArn: "${CERT_ARN}"
+    ortelius:
+      ingress:
+        type: ${INGRESS_TYPE}
+        host: "${DOMAIN}"
+        certificateArn: "${CERT_ARN}"
+      rbac_repo: "https://github.com/ortelius/rbac.git"
+      googleOidc:
+        clientId: "${GOOGLE_CLIENT_ID}"
+        allowedDomain: "${GOOGLE_ALLOWED_DOMAIN}"
+      githubSignin:
+        clientId: "${GHSIGNIN_CLIENT_ID}"
+      smtp:
+        enabled: true
+        host: "${SMTP_HOST}"
+        port: "${SMTP_PORT}"
+        username: "${SMTP_USER}"
+        fromEmail: "${SMTP_FROM_EMAIL}"
+        fromName: "${SMTP_FROM_NAME}"
+    relscanner-job: {}
+    arangodb: {}
+  valuesFrom:
+    - kind: Secret
+      name: ortelius-secrets
+YAML
+    else
+      cat > "$REPO_ROOT/$HELMRELEASE_REL" <<YAML
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -343,11 +433,11 @@ spec:
       graphqlEndpoint: "https://${DOMAIN}/api/v1/graphql"
       restapiEndpoint: "https://${DOMAIN}/api/v1"
       ingress:
-        type: glb
+        type: ${INGRESS_TYPE}
         host: "${DOMAIN}"
     ortelius:
       ingress:
-        type: glb
+        type: ${INGRESS_TYPE}
         host: "${DOMAIN}"
       rbac_repo: "https://github.com/ortelius/rbac.git"
       apiBaseUrl: "https://${DOMAIN}"
@@ -373,6 +463,7 @@ spec:
     - kind: Secret
       name: ortelius-secrets
 YAML
+    fi
     echo "  ✓ Wrote $HELMRELEASE_REL"
     WROTE_ANY=true
   fi
@@ -693,11 +784,6 @@ drain_flux_workloads() {
   set -e
 }
 
-if [[ "$ACTION" == "apply" ]]; then
-  ensure_app_manifests
-  ensure_secrets
-fi
-
 if [[ "$CLUSTER" == "eks" && ! -f "$WORKDIR/alb-controller-iam-policy.json" ]]; then
   echo "Downloading ALB controller IAM policy..."
   curl -fsSL -o "$WORKDIR/alb-controller-iam-policy.json" \
@@ -719,6 +805,11 @@ case "$ACTION" in
     echo ""
     echo "── Outputs ──────────────────────────────"
     terraform output
+
+    # Written after apply (not before) so EKS can pull acm_certificate_arn
+    # straight from terraform output instead of guessing it up front.
+    ensure_app_manifests
+    ensure_secrets
 
     if [[ "$CLUSTER" == "eks" ]]; then
       DOMAIN=$(grep 'domain' "$WORKDIR/terraform.tfvars" | cut -d'"' -f2)
