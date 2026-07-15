@@ -85,13 +85,13 @@ On the **first run**, `deploy.sh` generates an age encryption keypair and then p
 |---|---|
 | `smtp.username` | SMTP email address for outbound mail |
 | `arangodb.arangodb_pass` | ArangoDB root password |
-| `prtelius.rbac_repo_token` | GitHub PAT for the RBAC config repo |
-| `prtelius.clientSecret` | GitHub OAuth app client secret |
-| `prtelius.appId` | GitHub App ID |
-| `prtelius.clientId` | GitHub OAuth app client ID |
-| `prtelius.baseUrl` | Public base URL (e.g. `https://eks.deployhub.com`) |
+| `ortelius.rbac_repo_token` | GitHub PAT for the RBAC config repo |
+| `ortelius.clientSecret` | GitHub OAuth app client secret |
+| `ortelius.appId` | GitHub App ID |
+| `ortelius.clientId` | GitHub OAuth app client ID |
+| `ortelius.baseUrl` | Public base URL (e.g. `https://eks.deployhub.com`) |
 | `smtp.password` | SMTP account password |
-| `prtelius.privateKey` | GitHub App private key (paste PEM block, then Ctrl-D) |
+| `ortelius.privateKey` | GitHub App private key (paste PEM block, then Ctrl-D) |
 | `cloudflare.apiToken` *(EKS + Cloudflare only)* | Cloudflare API token for ExternalDNS (or set `TF_VAR_cloudflare_api_token`) |
 
 The age private key is saved to `~/.ssh/<cluster-name>.sops.key`. **Back this up — losing it means losing access to all encrypted secrets.**
@@ -176,6 +176,6 @@ Expected HelmRelease output:
 ```
 NAME            READY   STATUS
 frontend   True    Release reconciliation succeeded
-prtelius    True    Release reconciliation succeeded
+ortelius    True    Release reconciliation succeeded
 arangodb   True    Release reconciliation succeeded
 ```
