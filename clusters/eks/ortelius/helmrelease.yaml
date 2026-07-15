@@ -12,10 +12,13 @@ spec:
   dependsOn:
     - name: aws-load-balancer-controller
       namespace: flux-system
+
   interval: 5m
   targetNamespace: ortelius
+
   install:
     createNamespace: true
+
   chart:
     spec:
       chart: ortelius
@@ -25,6 +28,7 @@ spec:
         name: helmcharts
         namespace: flux-system
       interval: 5m
+
   values:
     global:
       apiBaseUrl: "https://eks.deployhub.com"
@@ -33,6 +37,7 @@ spec:
         appName: "deployhub"
         appId: "2727141"
         clientId: "Iv23liKdUQ34YPWnFfvu"
+
     frontend:
       graphqlEndpoint: "https://eks.deployhub.com/api/v1/graphql"
       restapiEndpoint: "https://eks.deployhub.com/api/v1"
@@ -48,9 +53,8 @@ spec:
         # Check `terraform output acm_certificate_arn` in terraform/eks
         # after any cert rotation and update both ingress blocks below.
         certificateArn: "arn:aws:acm:us-east-1:754991274490:certificate/0f0234a3-f9d2-4631-9ef3-5a91b662e287"
-        subnets:
-          - subnet-007f2057fbf029c8d
-          - subnet-0727bee4ed4847384
+        subnets: "subnet-007f2057fbf029c8d,subnet-0727bee4ed4847384"
+
     ortelius:
       ingress:
         enabled: true
@@ -59,15 +63,17 @@ spec:
         # certificateArn/subnets are hand-maintained — see the note on
         # frontend.ingress above. Keep both blocks in sync.
         certificateArn: "arn:aws:acm:us-east-1:754991274490:certificate/0f0234a3-f9d2-4631-9ef3-5a91b662e287"
-        subnets:
-          - subnet-007f2057fbf029c8d
-          - subnet-0727bee4ed4847384
+        subnets: "subnet-007f2057fbf029c8d,subnet-0727bee4ed4847384"
+
       rbac_repo: "https://github.com/ortelius/rbac.git"
+
       googleOidc:
         clientId: "1095520274207-amhnedlv47f2jlqj0v3itg1a324flfmb.apps.googleusercontent.com"
         allowedDomain: ""
+
       githubSignin:
         clientId: "Ov23liNEc9dA3puK7HvY"
+
       smtp:
         enabled: true
         host: "smtp.gmail.com"
@@ -75,8 +81,11 @@ spec:
         fromEmail: "steve@deployhub.com"
         fromName: "Steve Taylor"
         username: "steve@deployhub.com"
+
     relscanner-job: {}
+
     arangodb: {}
+
   valuesFrom:
     - kind: Secret
       name: ortelius-secrets

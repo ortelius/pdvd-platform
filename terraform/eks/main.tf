@@ -668,9 +668,9 @@ resource "null_resource" "helmrelease_alb_patch" {
 
       yq -i '
         .spec.values.frontend.ingress.certificateArn = env(CERT_ARN) |
-        .spec.values.frontend.ingress.subnets         = (env(SUBNETS_CSV) | split(",")) |
+        .spec.values.frontend.ingress.subnets         = env(SUBNETS_CSV) |
         .spec.values.ortelius.ingress.certificateArn  = env(CERT_ARN) |
-        .spec.values.ortelius.ingress.subnets         = (env(SUBNETS_CSV) | split(","))
+        .spec.values.ortelius.ingress.subnets         = env(SUBNETS_CSV)
       ' "$FILE"
 
       cd "$REPO_ROOT"

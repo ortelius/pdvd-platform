@@ -272,6 +272,7 @@ resource "google_kms_crypto_key_iam_member" "sops_user" {
 output "cluster_name"     { value = google_container_cluster.primary.name }
 output "cluster_endpoint" { value = google_container_cluster.primary.endpoint }
 output "static_ip"        { value = google_compute_global_address.app.address }
+output "static_ip_name"   { value = google_compute_global_address.app.name }
 
 variable "domain" {
   type        = string

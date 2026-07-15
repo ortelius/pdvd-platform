@@ -249,6 +249,23 @@ eks_acm_cert_arn() {
   (cd "$WORKDIR" && terraform output -raw acm_certificate_arn 2>/dev/null) || true
 }
 
+eks_public_subnets_csv() {
+  # The chart expects a comma-joined string here, not a YAML list — passing a
+  # list produces alb.ingress.kubernetes.io/subnets: [a b] (Go slice string,
+  # space-separated inside brackets), which the ALB controller can't parse
+  # ("couldn't find all subnets, missing names: [[a b]]").
+  local ids
+  ids="$(cd "$WORKDIR" && terraform output -json public_subnet_ids 2>/dev/null)" || return 0
+  echo "$ids" | tr -d '[]" '
+}
+
+gke_static_ip_name() {
+  # The chart's GLB ingress needs the *name* of the reserved static address
+  # (kubernetes.io/ingress.global-static-ip-name), not its IP value — that's
+  # a different Terraform output (static_ip_name vs static_ip).
+  (cd "$WORKDIR" && terraform output -raw static_ip_name 2>/dev/null) || true
+}
+
 ensure_flux_cli() {
   if ! command -v flux &>/dev/null; then
     echo "Installing flux CLI..."
@@ -273,7 +290,7 @@ ensure_app_manifests() {
   [[ -z "$DOMAIN" ]] && { echo "ERROR: domain must be set in $WORKDIR/terraform.tfvars"; exit 1; }
 
   # EKS uses an ALB with an ACM cert; GKE uses a GLB with a Google-managed cert.
-  local INGRESS_TYPE CERT_ARN
+  local INGRESS_TYPE CERT_ARN SUBNETS_CSV STATIC_IP_NAME
   if is_eks_cluster; then
     INGRESS_TYPE="alb"
     CERT_ARN="$(eks_acm_cert_arn)"
@@ -282,8 +299,20 @@ ensure_app_manifests() {
       echo "       ensure_app_manifests must run *after* 'terraform apply' has provisioned the ACM certificate."
       exit 1
     fi
+    SUBNETS_CSV="$(eks_public_subnets_csv)"
+    if [[ -z "$SUBNETS_CSV" ]]; then
+      echo "ERROR: Could not read 'public_subnet_ids' from terraform output."
+      echo "       ensure_app_manifests must run *after* 'terraform apply' has provisioned the VPC."
+      exit 1
+    fi
   else
     INGRESS_TYPE="glb"
+    STATIC_IP_NAME="$(gke_static_ip_name)"
+    if [[ -z "$STATIC_IP_NAME" ]]; then
+      echo "ERROR: Could not read 'static_ip_name' from terraform output."
+      echo "       ensure_app_manifests must run *after* 'terraform apply' has provisioned the static address."
+      exit 1
+    fi
   fi
 
   # Non-secret config that lives in plaintext helmrelease.yaml, not the
@@ -380,14 +409,18 @@ spec:
       graphqlEndpoint: "https://${DOMAIN}/api/v1/graphql"
       restapiEndpoint: "https://${DOMAIN}/api/v1"
       ingress:
+        enabled: true
         type: ${INGRESS_TYPE}
         host: "${DOMAIN}"
         certificateArn: "${CERT_ARN}"
+        subnets: "${SUBNETS_CSV}"
     ortelius:
       ingress:
+        enabled: true
         type: ${INGRESS_TYPE}
         host: "${DOMAIN}"
         certificateArn: "${CERT_ARN}"
+        subnets: "${SUBNETS_CSV}"
       rbac_repo: "https://github.com/ortelius/rbac.git"
       googleOidc:
         clientId: "${GOOGLE_CLIENT_ID}"
@@ -433,12 +466,16 @@ spec:
       graphqlEndpoint: "https://${DOMAIN}/api/v1/graphql"
       restapiEndpoint: "https://${DOMAIN}/api/v1"
       ingress:
+        enabled: true
         type: ${INGRESS_TYPE}
         host: "${DOMAIN}"
+        staticIP: "${STATIC_IP_NAME}"
     ortelius:
       ingress:
+        enabled: true
         type: ${INGRESS_TYPE}
         host: "${DOMAIN}"
+        staticIP: "${STATIC_IP_NAME}"
       rbac_repo: "https://github.com/ortelius/rbac.git"
       apiBaseUrl: "https://${DOMAIN}"
       baseUrl: "https://${DOMAIN}"

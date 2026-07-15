@@ -33,13 +33,23 @@ spec:
       graphqlEndpoint: "https://app.deployhub.com/api/v1/graphql"
       restapiEndpoint: "https://app.deployhub.com/api/v1"
       ingress:
+        enabled: true
         type: glb
         host: "app.deployhub.com"
+        # staticIP is the *name* of the reserved GCP static address (see
+        # google_compute_global_address.app / output.static_ip_name in
+        # terraform/gke), not its IP value — GCP's ingress.global-static-ip-name
+        # annotation requires the resource name. This is hand-maintained;
+        # only needs updating if the resource is ever renamed/recreated
+        # under a different name.
+        staticIP: "static-app-ip"
 
     ortelius:
       ingress:
+        enabled: true
         type: glb
         host: "app.deployhub.com"
+        staticIP: "static-app-ip"
 
       rbac_repo: "https://github.com/ortelius/rbac.git"
 
