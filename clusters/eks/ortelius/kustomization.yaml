@@ -7,14 +7,4 @@ metadata:
 resources:
   - helmrepository.yaml
   - helmrelease.yaml
-  - secrets.enc.yaml           
-
-configMapGenerator:
-  - name: values
-    namespace: flux-system
-    files:
-      - values.yaml
-
-# Remove the secretGenerator block entirely
-generatorOptions:
-  disableNameSuffixHash: true
+  - secrets.enc.yaml
