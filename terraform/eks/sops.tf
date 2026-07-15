@@ -166,6 +166,7 @@ ORTELIUSKUST
   ]
 }
 
+<<<<<<< Updated upstream
 output "kms_key_arn" {
   description = "AWS KMS key ARN — used in .sops.yaml kms rule"
   value       = data.aws_kms_alias.sops.target_key_arn
@@ -174,4 +175,9 @@ output "kms_key_arn" {
 output "flux_sops_role_arn" {
   description = "IAM role ARN — annotated on Flux controller KSAs for IRSA KMS access"
   value       = module.flux_sops_irsa_role.iam_role_arn
+=======
+output "age_key_file" {
+  description = "Path to the age private key — back this up securely"
+  value       = pathexpand("~/.ssh/${var.cluster_name}.sops.key")
+>>>>>>> Stashed changes
 }
