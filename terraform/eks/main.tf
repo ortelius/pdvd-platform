@@ -592,11 +592,42 @@ resource "null_resource" "git_pull" {
   triggers = { always = timestamp() }
   provisioner "local-exec" {
     command = <<-CMD
+      set -eu
       REPO_ROOT=$(git -C "${path.module}" rev-parse --show-toplevel)
       cd "$REPO_ROOT"
-      git stash || true
+
+      STASHED=0
+      if ! git diff --quiet || ! git diff --cached --quiet; then
+        git stash
+        STASHED=1
+      fi
+
       git pull --rebase origin main
-      git stash pop || true
+
+      if [ "$STASHED" = "1" ]; then
+        if ! git stash pop; then
+          echo "ERROR: 'git stash pop' produced conflicts after rebase." >&2
+          echo "The working tree now has unresolved conflicts — stopping" >&2
+          echo "rather than proceeding with a broken checkout. Resolve" >&2
+          echo "manually (git status / git diff / git add / git stash drop)" >&2
+          echo "then re-run apply." >&2
+          exit 1
+        fi
+      fi
+
+      # Belt-and-suspenders: regardless of which path above ran, never let
+      # this resource report success while the tree has unmerged paths —
+      # e.g. a stale stash from a previous failed run that another process
+      # popped, or a rebase conflict this script didn't otherwise catch.
+      # Uses git's own unmerged-diff-filter rather than hand-parsing
+      # porcelain status codes (which include DU/AA/DD, not just U*).
+      UNMERGED=$(git diff --name-only --diff-filter=U)
+      if [ -n "$UNMERGED" ]; then
+        echo "ERROR: unmerged paths detected after git_pull:" >&2
+        echo "$UNMERGED" >&2
+        echo "Resolve these manually before re-running apply." >&2
+        exit 1
+      fi
     CMD
     environment = { GITHUB_TOKEN = var.github_token }
   }
