@@ -12,21 +12,65 @@ spec:
   dependsOn:
     - name: aws-load-balancer-controller
       namespace: flux-system
+
   interval: 5m
   targetNamespace: ortelius
+
   install:
     createNamespace: true
+
   chart:
     spec:
       chart: ortelius
-      version: ">=12.0.0"
+      version: ">=12.0.323"
       sourceRef:
         kind: HelmRepository
         name: helmcharts
         namespace: flux-system
       interval: 5m
+
+  values:
+    global:
+      apiBaseUrl: "https://eks.deployhub.com"
+      baseUrl: "https://eks.deployhub.com"
+      github:
+        appName: "deployhub"
+        appId: "2727141"
+        clientId: "Iv23liKdUQ34YPWnFfvu"
+
+    frontend:
+      graphqlEndpoint: "https://eks.deployhub.com/api/v1/graphql"
+      restapiEndpoint: "https://eks.deployhub.com/api/v1"
+      ingress:
+        type: alb
+        host: "eks.deployhub.com"
+
+    ortelius:
+      ingress:
+        type: alb
+        host: "eks.deployhub.com"
+
+      rbac_repo: "https://github.com/ortelius/rbac.git"
+
+      googleOidc:
+        clientId: "1095520274207-amhnedlv47f2jlqj0v3itg1a324flfmb.apps.googleusercontent.com"
+        allowedDomain: ""
+
+      githubSignin:
+        clientId: "Ov23liNEc9dA3puK7HvY"
+
+      smtp:
+        enabled: true
+        host: "smtp.gmail.com"
+        port: "587"
+        fromEmail: "steve@deployhub.com"
+        fromName: "Steve Taylor"
+        username: "steve@deployhub.com"
+
+    relscanner-job: {}
+
+    arangodb: {}
+
   valuesFrom:
-    - kind: ConfigMap
-      name: values
     - kind: Secret
       name: ortelius-secrets
