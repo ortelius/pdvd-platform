@@ -44,11 +44,13 @@ spec:
       ingress:
         type: alb
         host: "eks.deployhub.com"
+        certificateArn: "arn:aws:acm:us-east-1:754991274490:certificate/28b13dac-da2f-43b9-ad6d-929462c63f87"
 
     ortelius:
       ingress:
         type: alb
         host: "eks.deployhub.com"
+        certificateArn: "arn:aws:acm:us-east-1:754991274490:certificate/28b13dac-da2f-43b9-ad6d-929462c63f87"
 
       rbac_repo: "https://github.com/ortelius/rbac.git"
 
