@@ -37,6 +37,7 @@ spec:
       graphqlEndpoint: "https://eks.deployhub.com/api/v1/graphql"
       restapiEndpoint: "https://eks.deployhub.com/api/v1"
       ingress:
+        enabled: true
         type: alb
         host: "eks.deployhub.com"
         # certificateArn/subnets are hand-maintained here — this file has no
@@ -52,6 +53,7 @@ spec:
           - subnet-0727bee4ed4847384
     ortelius:
       ingress:
+        enabled: true
         type: alb
         host: "eks.deployhub.com"
         # certificateArn/subnets are hand-maintained — see the note on
